@@ -99,6 +99,10 @@ local function state_for(project)
   return states[project]
 end
 
+local function append_log(state, output)
+  vim.list_extend(state.logs, vim.split(output, "\n", { plain = true, trimempty = true }))
+end
+
 local function load(state)
   state.config = require("overseer.files").load_json_file(state.file)
   assert(state.config and state.config.version == 1, "Experiment config needs version 1")
@@ -387,7 +391,7 @@ refresh = function(state)
         state.plan = data.plan
       else
         state.status = "CONFIG ERROR"
-        table.insert(state.logs, result.stdout or result.stderr or "Invalid experiment config")
+        append_log(state, (result.stdout or "") .. (result.stderr or ""))
       end
       render(state)
     end)
@@ -656,7 +660,7 @@ local function process_event(state, event)
     state.status = (configuring and "Configuring · " or "Building · ") .. event.server
   elseif event.event == "error" or event.event == "build_failed" then
     state.status = "FAILURE"
-    table.insert(state.logs, event.message or ("Build failed on " .. event.server))
+    append_log(state, event.message or ("Build failed on " .. event.server))
   elseif event.event == "canceled" then
     state.status = "CANCELED"
   end

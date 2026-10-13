@@ -516,4 +516,26 @@ describe("experiment panel", function()
       { vim.api.nvim_win_get_width(source), vim.api.nvim_win_get_height(source) }
     )
   end)
+  it("renders multiline background config errors as separate log lines", function()
+    local response
+    vim.system = function(argv, opts, callback)
+      if argv[3] == "describe" then
+        response = callback
+        return {}
+      end
+      return system(argv, opts, callback)
+    end
+    panel_key("3")
+    experiment.open(root, true)
+    vim.system = system
+    response({ code = 1, stdout = "first error\nsecond error\n", stderr = "extra detail\n" })
+    assert.is_true(vim.wait(3000, function()
+      return state.status == "CONFIG ERROR"
+    end, 10))
+    local lines = vim.api.nvim_buf_get_lines(state.buf, 0, -1, false)
+    assert.is_true(vim.tbl_contains(lines, "first error"))
+    assert.is_true(vim.tbl_contains(lines, "second error"))
+    assert.is_true(vim.tbl_contains(lines, "extra detail"))
+    assert.is_false(vim.bo[state.buf].modifiable)
+  end)
 end)
