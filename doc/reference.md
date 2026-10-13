@@ -95,6 +95,7 @@ require("overseer").setup({
     run_tasks = { "Run" },
   },
   cmake = { enabled = false },
+  experiment = { python = "python3" },
   -- Configure the task output buffer and window
   output = {
     -- Use a terminal buffer to display output. If false, a normal buffer is used
@@ -227,17 +228,20 @@ require("overseer").setup({
 
 ## Commands
 
-| Command               | Args                | Description                                                                           |
-| --------------------- | ------------------- | ------------------------------------------------------------------------------------- |
-| `OverseerResults`     |                     | Toggle the latest task results                                                        |
-| `OverseerHistory`     |                     | Browse recent workflow output                                                         |
-| `OverseerCMakePreset` |                     | Select this project's CMake configure preset                                          |
-| `OverseerOpen[!]`     | `left/right/bottom` | Open the overseer window. With `!` cursor stays in current window                     |
-| `OverseerClose`       |                     | Close the overseer window                                                             |
-| `OverseerToggle[!]`   | `left/right/bottom` | Toggle the overseer window. With `!` cursor stays in current window                   |
-| `OverseerRun`         | `[name/tags]`       | Run a task from a template                                                            |
-| `OverseerShell[!]`    | `[command]`         | Run a shell command as an overseer task. With `!` the task is created but not started |
-| `OverseerTaskAction`  |                     | Select a task to run an action on                                                     |
+| Command                  | Args                | Description                                                                           |
+| ------------------------ | ------------------- | ------------------------------------------------------------------------------------- |
+| `OverseerExperiment`     |                     | Toggle the experiment configuration and progress panel                                |
+| `OverseerExperimentInit` |                     | Create an editable experiment configuration                                           |
+| `OverseerExperimentRun`  |                     | Run the selected experiment combinations sequentially                                 |
+| `OverseerResults`        |                     | Toggle the latest task results                                                        |
+| `OverseerHistory`        |                     | Browse recent workflow output                                                         |
+| `OverseerCMakePreset`    |                     | Select this project's CMake configure preset                                          |
+| `OverseerOpen[!]`        | `left/right/bottom` | Open the overseer window. With `!` cursor stays in current window                     |
+| `OverseerClose`          |                     | Close the overseer window                                                             |
+| `OverseerToggle[!]`      | `left/right/bottom` | Toggle the overseer window. With `!` cursor stays in current window                   |
+| `OverseerRun`            | `[name/tags]`       | Run a task from a template                                                            |
+| `OverseerShell[!]`       | `[command]`         | Run a shell command as an overseer task. With `!` the task is created but not started |
+| `OverseerTaskAction`     |                     | Select a task to run an action on                                                     |
 
 ## Highlight groups
 

@@ -10,6 +10,7 @@ local default_config = {
     run_tasks = { "Run" },
   },
   cmake = { enabled = false },
+  experiment = { python = "python3" },
   -- Configure the task output buffer and window
   output = {
     -- Use a terminal buffer to display output. If false, a normal buffer is used
@@ -187,6 +188,7 @@ end
 ---@field dap boolean
 ---@field results overseer.ConfigResults
 ---@field cmake {enabled: boolean}
+---@field experiment {python: string}
 ---@field log_level integer
 ---@field experimental_wrap_builtins overseer.ConfigWrapBuiltins
 ---@field output overseer.ConfigOutput
@@ -204,6 +206,7 @@ end
 ---@field dap? boolean Patch nvim-dap to support preLaunchTask and postDebugTask
 ---@field results? overseer.SetupConfigResults
 ---@field cmake? {enabled?: boolean}
+---@field experiment? {python?: string}
 ---@field log_level? integer Log level
 ---@field experimental_wrap_builtins? overseer.SetupConfigWrapBuiltins
 ---@field output? overseer.SetupConfigOutput

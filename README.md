@@ -6,6 +6,7 @@ A task runner and job management plugin for Neovim
 
 - [Features](#features)
 - [Results interface (hongyx11 fork)](#results-interface-hongyx11-fork)
+- [Experiments (hongyx11 fork)](#experiments-hongyx11-fork)
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Quick start](#quick-start)
@@ -70,6 +71,13 @@ An optional results interface keeps configure/build tasks in the background,
 shows program output in a reusable window on the right, and opens the failing
 command's log automatically. It includes recent workflow history and a CMake
 preset selector. See [the results guide](doc/results.md) for setup and behavior.
+
+## Experiments (hongyx11 fork)
+
+Select multiple datasets, thread counts, methods, and host/resource profiles, then
+run their combinations sequentially from one persistent right panel. Export the
+same plan for standalone execution or Slurm submission. See the
+[experiment guide](doc/experiments.md) and [SpMV example](examples/spmv-experiment.json).
 
 ## Requirements
 

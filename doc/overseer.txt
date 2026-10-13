@@ -15,6 +15,15 @@ CONTENTS                                                       *overseer-content
 --------------------------------------------------------------------------------
 COMMANDS                                                       *overseer-commands*
 
+OverseerExperiment                                           *:OverseerExperiment*
+    Toggle the experiment configuration and progress panel
+
+OverseerExperimentInit                                   *:OverseerExperimentInit*
+    Create an editable experiment configuration
+
+OverseerExperimentRun                                     *:OverseerExperimentRun*
+    Run the selected experiment combinations sequentially
+
 OverseerResults                                                 *:OverseerResults*
     Toggle the latest task results
 
@@ -59,6 +68,7 @@ OPTIONS                                                         *overseer-option
         run_tasks = { "Run" },
       },
       cmake = { enabled = false },
+      experiment = { python = "python3" },
       -- Configure the task output buffer and window
       output = {
         -- Use a terminal buffer to display output. If false, a normal buffer is used

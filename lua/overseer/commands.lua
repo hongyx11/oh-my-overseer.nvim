@@ -6,6 +6,15 @@ local template = require("overseer.template")
 local window = require("overseer.window")
 
 local M = {}
+M._experiment = function()
+  require("overseer.experiment").toggle()
+end
+M._experiment_init = function()
+  require("overseer.experiment").init()
+end
+M._experiment_run = function()
+  require("overseer.experiment").run()
+end
 M._results = function()
   require("overseer.results").toggle()
 end

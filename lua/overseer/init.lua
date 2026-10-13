@@ -4,6 +4,21 @@ local M = {}
 
 local commands = {
   {
+    cmd = "OverseerExperiment",
+    func = "_experiment",
+    def = { desc = "Toggle the experiment configuration and progress panel" },
+  },
+  {
+    cmd = "OverseerExperimentInit",
+    func = "_experiment_init",
+    def = { desc = "Create an editable experiment configuration" },
+  },
+  {
+    cmd = "OverseerExperimentRun",
+    func = "_experiment_run",
+    def = { desc = "Run the selected experiment combinations sequentially" },
+  },
+  {
     cmd = "OverseerResults",
     func = "_results",
     def = { desc = "Toggle the latest task results" },

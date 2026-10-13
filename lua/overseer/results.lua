@@ -13,9 +13,9 @@ local function context_project()
     return vim.b.overseer_project
   end
   local file = vim.api.nvim_buf_get_name(0)
-  local root = vim.fs.root(vim.fn.getcwd(), { ".vscode", "CMakePresets.json" })
+  local root = vim.fs.root(vim.fn.getcwd(), { ".overseer", ".vscode", "CMakePresets.json" })
   if not root and vim.bo.buftype == "" and file ~= "" then
-    root = vim.fs.root(file, { ".vscode", "CMakePresets.json" })
+    root = vim.fs.root(file, { ".overseer", ".vscode", "CMakePresets.json" })
   end
   root = root or vim.fs.root(vim.fn.getcwd(), { ".git" })
   return vim.fs.normalize(root or vim.fn.getcwd())
@@ -25,7 +25,7 @@ M.context_project = context_project
 
 local function project(task)
   return vim.fs.normalize(
-    vim.fs.root(task.cwd, { ".vscode", "CMakePresets.json", ".git" }) or task.cwd
+    vim.fs.root(task.cwd, { ".overseer", ".vscode", "CMakePresets.json", ".git" }) or task.cwd
   )
 end
 
@@ -114,9 +114,16 @@ local function display(buf, name, status, focus, key)
   elseif vim.api.nvim_win_is_valid(source) then
     vim.api.nvim_set_current_win(source)
   end
+  return win
 end
 
+M.mount = display
+
 function M.show(task, focus)
+  if task.metadata.experiment then
+    require("overseer.experiment").show(task, focus)
+    return
+  end
   local buf = task:get_bufnr()
   if task.metadata.start_error then
     if
@@ -250,6 +257,8 @@ function M.restart()
       vim.log.levels.INFO,
       { title = "Overseer" }
     )
+  elseif record.task.metadata.experiment then
+    require("overseer.experiment").rerun(record.task)
   else
     record.task:restart()
   end
