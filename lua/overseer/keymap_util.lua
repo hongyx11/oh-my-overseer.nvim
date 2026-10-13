@@ -13,7 +13,7 @@ local function resolve(rhs)
     local action_name = vim.split(rhs, ".", { plain = true })[2]
     local action = keymaps[action_name]
     if not action then
-      vim.notify("[overseer.nvim] Unknown action name: " .. action_name, vim.log.levels.ERROR)
+      vim.notify("[Oh My Overseer] Unknown action name: " .. action_name, vim.log.levels.ERROR)
     end
     return resolve(action)
   elseif type(rhs) == "table" then

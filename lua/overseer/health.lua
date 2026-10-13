@@ -10,7 +10,7 @@ for k, v in pairs(vim.log.levels) do
 end
 
 M.check = function()
-  vim.health.start("overseer.nvim report")
+  vim.health.start("Oh My Overseer report")
 
   if vim.fn.has("nvim-0.11") == 0 then
     vim.health.error("Neovim 0.11 or later is required")

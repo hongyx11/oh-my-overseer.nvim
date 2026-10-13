@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Before submitting a feature request, make sure to search for [existing requests](https://github.com/stevearc/overseer.nvim/issues)
+        Before submitting a feature request, make sure to search for [existing requests](https://github.com/hongyx11/oh-my-overseer.nvim/issues)
   - type: checkboxes
     attributes:
       label: Did you check existing requests?

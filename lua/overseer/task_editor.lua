@@ -40,7 +40,7 @@ function Editor.new(task, task_cb)
   vim.bo[bufnr].swapfile = false
   vim.bo[bufnr].bufhidden = "wipe"
   vim.bo[bufnr].buftype = "acwrite"
-  vim.api.nvim_buf_set_name(bufnr, "Overseer task editor")
+  vim.api.nvim_buf_set_name(bufnr, "Oh My Overseer task editor")
 
   local components = {}
   for _, comp in ipairs(task.components) do

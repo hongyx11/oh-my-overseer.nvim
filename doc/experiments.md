@@ -1,4 +1,4 @@
-# Experiments (hongyx11 fork)
+# Oh My Overseer experiments
 
 Create named experiments, attach reusable options, and run the Cartesian product
 of their selected values. Options can be threads, tile size, precision, layout,

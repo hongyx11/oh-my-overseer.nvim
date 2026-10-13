@@ -74,7 +74,7 @@ local function initialize()
 
   local logfile, openerr = io.open(filepath, "a+")
   if not logfile then
-    local err_msg = string.format("Failed to open overseer.nvim log file: %s", openerr)
+    local err_msg = string.format("Failed to open Oh My Overseer log file: %s", openerr)
     vim.notify(err_msg, vim.log.levels.ERROR)
   else
     write = function(line)

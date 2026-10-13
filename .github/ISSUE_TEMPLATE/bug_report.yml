@@ -6,7 +6,7 @@ body:
   - type: markdown
     attributes:
       value: |
-        Before reporting a bug, make sure to search [existing issues](https://github.com/stevearc/overseer.nvim/issues)
+        Before reporting a bug, make sure to search [existing issues](https://github.com/hongyx11/oh-my-overseer.nvim/issues)
   - type: input
     attributes:
       label: "Neovim version (nvim -v)"
@@ -91,7 +91,8 @@ body:
           "folke/tokyonight.nvim",
           { "stevearc/dressing.nvim", config = true },
           {
-            "stevearc/overseer.nvim",
+            "hongyx11/oh-my-overseer.nvim",
+            main = "overseer",
             config = function()
               require("overseer").setup({
                 -- add your overseer config here

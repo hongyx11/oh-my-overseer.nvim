@@ -55,7 +55,7 @@ local function system_notify(message, level)
     local cmd = {
       "osascript",
       "-e",
-      string.format('display notification "Overseer task complete" with title "%s"', message),
+      string.format('display notification "Oh My Overseer task complete" with title "%s"', message),
     }
     if vim.fn.executable("reattach-to-user-namespace") == 1 then
       table.insert(cmd, 1, "reattach-to-user-namespace")
@@ -67,7 +67,7 @@ local function system_notify(message, level)
       "notify-send",
       "-u",
       urgency,
-      "Overseer task complete",
+      "Oh My Overseer task complete",
       message,
     }, {})
   end

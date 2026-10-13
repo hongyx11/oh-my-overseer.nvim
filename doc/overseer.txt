@@ -1,5 +1,6 @@
 *overseer.txt*
 *Overseer* *overseer* *overseer.nvim*
+Oh My Overseer (OMO) *oh-my-overseer.nvim* *OMO*
 --------------------------------------------------------------------------------
 CONTENTS                                                       *overseer-contents*
 

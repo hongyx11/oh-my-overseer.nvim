@@ -486,6 +486,7 @@ def convert_md_section(
 
 def generate_vimdoc():
     doc = Vimdoc("overseer.txt", "overseer")
+    doc.prefix.append("Oh My Overseer (OMO) *oh-my-overseer.nvim* *OMO*\n")
     doc.sections.extend(
         [
             get_commands_vimdoc(),

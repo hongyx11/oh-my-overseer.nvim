@@ -162,7 +162,7 @@ function M.select(callback, root)
     vim.notify(
       "No CMake presets found in this project",
       vim.log.levels.INFO,
-      { title = "Overseer" }
+      { title = "Oh My Overseer" }
     )
     if callback then
       callback(nil)
@@ -218,7 +218,11 @@ function M.select(callback, root)
         local file = state_file(root)
         vim.fn.mkdir(vim.fs.dirname(file), "p")
         vim.fn.writefile({ vim.json.encode({ preset = choice.name }) }, file)
-        vim.notify("CMake preset: " .. choice.name, vim.log.levels.INFO, { title = "Overseer" })
+        vim.notify(
+          "CMake preset: " .. choice.name,
+          vim.log.levels.INFO,
+          { title = "Oh My Overseer" }
+        )
         if callback then
           callback(selection)
         end

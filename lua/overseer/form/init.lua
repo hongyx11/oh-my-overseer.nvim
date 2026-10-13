@@ -49,7 +49,7 @@ function Form.new(title, schema, params, callback)
   vim.bo[bufnr].swapfile = false
   vim.bo[bufnr].bufhidden = "wipe"
   vim.bo[bufnr].buftype = "acwrite"
-  vim.api.nvim_buf_set_name(bufnr, "Overseer form")
+  vim.api.nvim_buf_set_name(bufnr, "Oh My Overseer form")
 
   local form
   local cleanup, layout = form_utils.open_form_win(bufnr, {

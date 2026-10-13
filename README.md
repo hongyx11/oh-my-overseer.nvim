@@ -1,12 +1,19 @@
-# overseer.nvim
+# Oh My Overseer
 
-A task runner and job management plugin for Neovim
+**Oh My Overseer (OMO)** is a task runner and experiment workspace for Neovim.
+Configure and build projects, run parameter sweeps, inspect live output, and
+export the same experiment for standalone execution or Slurm submission.
+
+A fork of [stevearc/overseer.nvim](https://github.com/stevearc/overseer.nvim).
+The Lua module remains `require("overseer")`, and existing `:Overseer*` commands,
+highlight groups, `.overseer/` project files, and shared option libraries remain
+compatible. Install OMO in place of upstream Overseer; both use the same module.
 
 <!-- TOC -->
 
 - [Features](#features)
-- [Results interface (hongyx11 fork)](#results-interface-hongyx11-fork)
-- [Experiments (hongyx11 fork)](#experiments-hongyx11-fork)
+- [Results interface](#results-interface)
+- [Experiments](#experiments)
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Quick start](#quick-start)
@@ -65,14 +72,14 @@ A task runner and job management plugin for Neovim
 - Define and run complex multi-stage workflows
 - Support for `preLaunchTask` when used with [nvim-dap](https://github.com/mfussenegger/nvim-dap)
 
-## Results interface (hongyx11 fork)
+## Results interface
 
 An optional results interface keeps configure/build tasks in the background,
 shows program output in a reusable window on the right, and opens the failing
 command's log automatically. It includes recent workflow history and a CMake
 preset selector. See [the results guide](doc/results.md) for setup and behavior.
 
-## Experiments (hongyx11 fork)
+## Experiments
 
 Create named experiments and attach reusable options such as threads, tile size,
 layout, or Slurm nodes. Edit selections by row and share named option presets
@@ -86,14 +93,16 @@ same plan for standalone execution or Slurm submission. See the
 
 ## Installation
 
-overseer supports all the usual plugin managers
+Oh My Overseer supports all the usual plugin managers. With lazy.nvim, set
+`main = "overseer"` so it can find the existing Lua module:
 
 <details>
   <summary>lazy.nvim</summary>
 
 ```lua
 {
-  'stevearc/overseer.nvim',
+  'hongyx11/oh-my-overseer.nvim',
+  main = 'overseer',
   ---@module 'overseer'
   ---@type overseer.SetupOpts
   opts = {},
@@ -108,7 +117,7 @@ overseer supports all the usual plugin managers
 ```lua
 require("packer").startup(function()
   use({
-    "stevearc/overseer.nvim",
+    "hongyx11/oh-my-overseer.nvim",
     config = function()
       require("overseer").setup()
     end,
@@ -123,7 +132,7 @@ end)
 
 ```lua
 require("paq")({
-  { "stevearc/overseer.nvim" },
+  { "hongyx11/oh-my-overseer.nvim" },
 })
 ```
 
@@ -133,7 +142,7 @@ require("paq")({
   <summary>vim-plug</summary>
 
 ```vim
-Plug 'stevearc/overseer.nvim'
+Plug 'hongyx11/oh-my-overseer.nvim'
 ```
 
 </details>
@@ -142,7 +151,7 @@ Plug 'stevearc/overseer.nvim'
   <summary>dein</summary>
 
 ```vim
-call dein#add('stevearc/overseer.nvim')
+call dein#add('hongyx11/oh-my-overseer.nvim')
 ```
 
 </details>
@@ -151,7 +160,7 @@ call dein#add('stevearc/overseer.nvim')
   <summary>Pathogen</summary>
 
 ```sh
-git clone --depth=1 https://github.com/stevearc/overseer.nvim.git ~/.vim/bundle/
+git clone --depth=1 https://github.com/hongyx11/oh-my-overseer.nvim.git ~/.vim/bundle/
 ```
 
 </details>
@@ -160,8 +169,8 @@ git clone --depth=1 https://github.com/stevearc/overseer.nvim.git ~/.vim/bundle/
   <summary>Neovim native package</summary>
 
 ```sh
-git clone --depth=1 https://github.com/stevearc/overseer.nvim.git \
-  "${XDG_DATA_HOME:-$HOME/.local/share}"/nvim/site/pack/overseer/start/overseer.nvim
+git clone --depth=1 https://github.com/hongyx11/oh-my-overseer.nvim.git \
+  "${XDG_DATA_HOME:-$HOME/.local/share}"/nvim/site/pack/overseer/start/oh-my-overseer.nvim
 ```
 
 </details>

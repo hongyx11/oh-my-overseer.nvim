@@ -210,7 +210,11 @@ function M.toggle()
   end
   local record = latest[context_project()]
   if not record then
-    vim.notify("No task output for this project yet", vim.log.levels.INFO, { title = "Overseer" })
+    vim.notify(
+      "No task output for this project yet",
+      vim.log.levels.INFO,
+      { title = "Oh My Overseer" }
+    )
     return
   end
   M.show(record.output or record.task, true)
@@ -251,13 +255,13 @@ function M.restart()
     vim.notify(
       "No workflow to repeat for this project",
       vim.log.levels.INFO,
-      { title = "Overseer" }
+      { title = "Oh My Overseer" }
     )
   elseif record.task:is_running() then
     vim.notify(
       "This project's workflow is already running",
       vim.log.levels.INFO,
-      { title = "Overseer" }
+      { title = "Oh My Overseer" }
     )
   elseif record.task.metadata.experiment then
     require("overseer.experiment").rerun(record.task)
@@ -400,7 +404,7 @@ function M.on_complete(task, status)
     vim.notify(
       message,
       status == STATUS.FAILURE and vim.log.levels.ERROR or vim.log.levels.INFO,
-      { title = "Overseer" }
+      { title = "Oh My Overseer" }
     )
     if
       status == STATUS.FAILURE

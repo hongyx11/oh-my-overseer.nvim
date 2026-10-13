@@ -33,9 +33,11 @@ local function panel_config(state)
     height = height,
     style = "minimal",
     border = opts.border,
-    title = " " .. display_text(state.config.name or "Experiment") .. " · " .. display_text(
-      state.status
-    ) .. " ",
+    title = " Oh My Overseer · "
+      .. display_text(state.config.name or "Experiment")
+      .. " · "
+      .. display_text(state.status)
+      .. " ",
     title_pos = "center",
     zindex = 40,
   }
@@ -455,9 +457,11 @@ render = function(state)
       vim.wo[panel.win].wrap = state.view ~= "logs"
       vim.wo[panel.win].linebreak = true
       vim.api.nvim_win_set_config(panel.win, {
-        title = " " .. display_text(config.name or "Experiment") .. " · " .. display_text(
-          state.status
-        ) .. " ",
+        title = " Oh My Overseer · "
+          .. display_text(config.name or "Experiment")
+          .. " · "
+          .. display_text(state.status)
+          .. " ",
         title_pos = "center",
       })
     end

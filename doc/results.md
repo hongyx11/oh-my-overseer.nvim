@@ -1,6 +1,6 @@
 # Results interface
 
-The hongyx11 fork provides an optional interface for workflows where the useful
+Oh My Overseer provides an optional interface for workflows where the useful
 information is the final outcome and the program's output.
 
 ```lua
