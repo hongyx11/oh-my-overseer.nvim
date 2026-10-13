@@ -322,15 +322,20 @@ local function render(state)
     end
     log_end = #lines
   end
-  vim.list_extend(lines, {
-    "",
-    "Enter / m modify row · a add option · s option settings",
-    "N new experiment · O choose experiment · p preset · T target",
-    "C configure · B build · r run sequentially",
-    "w save · e edit JSON · E export · L load",
-    "S submit Slurm · u refresh jobs · X cancel jobs",
-    "x stop interactive run · Esc / q close · R reload",
-  })
+  local footer_start = #lines
+  local controls = {
+    { "Experiments", "N new · O switch · L load" },
+    { "Options", "Enter/m edit row · a add · s settings" },
+    { "Build setup", "p preset · T target · b binary" },
+    { "Execute", "C configure · B build · r run · x stop" },
+    { "Files", "w save · e edit JSON · R reload · E export" },
+    { "Slurm", "S submit · u refresh · X cancel" },
+    { "View", "1 config · 2 runs · 3 logs · Esc/q close" },
+  }
+  vim.list_extend(lines, { "", "CONTROLS" })
+  for _, control in ipairs(controls) do
+    table.insert(lines, string.format("%-12s %s", control[1], control[2]))
+  end
   lines = vim.tbl_map(display_text, lines)
   local follow_requested = state.follow_logs
   state.follow_logs = nil
@@ -375,6 +380,13 @@ local function render(state)
   highlight(0, "Title")
   highlight(1, "Special")
   highlight(3, state.status:find("FAIL") and "DiagnosticError" or "DiagnosticInfo")
+  highlight(footer_start + 1, "Comment")
+  for index in ipairs(controls) do
+    vim.api.nvim_buf_set_extmark(state.buf, state.ns, footer_start + 1 + index, 0, {
+      end_col = 12,
+      hl_group = "Special",
+    })
+  end
 end
 
 local function run_log(state, id)
