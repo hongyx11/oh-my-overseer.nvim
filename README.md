@@ -82,9 +82,10 @@ preset selector. See [the results guide](doc/results.md) for setup and behavior.
 ## Experiments
 
 Create named experiments and attach reusable options such as threads, tile size,
-layout, or Slurm nodes. Edit selections by row and share named option presets
+layout, Slurm nodes, or GPU model (L40S/H100). Edit selections by row and share named option presets
 between experiments. Run combinations sequentially from a centered floating panel. Export the
-same plan for standalone execution or Slurm submission. See the
+same plan for standalone execution or Slurm submission. Remote source revisions,
+job state, and logs survive disconnection; reconnect from the same panel. See the
 [experiment guide](doc/experiments.md) and [SpMV example](examples/spmv-experiment.json).
 
 ## Requirements

@@ -7,6 +7,7 @@
 - [on_complete_dispose](#on_complete_dispose)
 - [on_complete_notify](#on_complete_notify)
 - [on_complete_restart](#on_complete_restart)
+- [on_exit_set_observer_status](#on_exit_set_observer_status)
 - [on_exit_set_status](#on_exit_set_status)
 - [on_output_notify](#on_output_notify)
 - [on_output_parse](#on_output_parse)
@@ -80,6 +81,12 @@ Restart task when it completes
 | -------- | ------------ | ------------- | -------------------------------------------------------------- |
 | delay    | `number`     | `500`         | How long to wait (in ms) post-result before triggering restart |
 | statuses | `list[enum]` | `["FAILURE"]` | What statuses will trigger a restart                           |
+
+## on_exit_set_observer_status
+
+[on_exit_set_observer_status.lua](../lua/overseer/component/on_exit_set_observer_status.lua)
+
+Classify an OMO observer exit separately from its remote job lifetime
 
 ## on_exit_set_status
 

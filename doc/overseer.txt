@@ -16,6 +16,15 @@ CONTENTS                                                       *overseer-content
 --------------------------------------------------------------------------------
 COMMANDS                                                       *overseer-commands*
 
+OverseerSync                                                       *:OverseerSync*
+    Publish a captured source revision to selected remote hosts
+
+OverseerReconnect                                             *:OverseerReconnect*
+    Reconnect to the experiment's saved execution session
+
+OverseerExperimentCancel                               *:OverseerExperimentCancel*
+    Cancel the experiment's owned process or Slurm jobs
+
 OverseerExperiment                                           *:OverseerExperiment*
     Toggle the experiment configuration and progress panel
 
@@ -852,6 +861,9 @@ on_complete_restart                                          *on_complete_restar
                  restart (default `500`)
       {statuses} `list[enum]` What statuses will trigger a restart (default
                  `["FAILURE"]`)
+
+on_exit_set_observer_status                          *on_exit_set_observer_status*
+    Classify an OMO observer exit separately from its remote job lifetime
 
 on_exit_set_status                                            *on_exit_set_status*
     Sets final task status based on exit code

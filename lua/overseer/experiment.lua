@@ -338,6 +338,9 @@ render = function(state)
         for _, key in ipairs(vim.tbl_keys(profile.slurm or {})) do
           table.insert(lines, "  " .. key .. ": " .. tostring(profile.slurm[key]))
         end
+        for _, key in ipairs(vim.tbl_keys(profile.slurm_batch or {})) do
+          table.insert(lines, "  batch " .. key .. ": " .. tostring(profile.slurm_batch[key]))
+        end
       end
     end
   elseif state.view == "runs" then
@@ -400,6 +403,7 @@ render = function(state)
     { "Build setup", "p preset · T target · b binary" },
     { "Execute", "C configure · B build · r run · x stop" },
     { "Files", "w save · e edit JSON · R reload · E export" },
+    { "Remote", "Y sync source · A reconnect" },
     { "Slurm", "S submit · u refresh · X cancel" },
     { "View", "1 config · 2 runs · 3 logs · Esc/q close" },
   }
@@ -831,7 +835,7 @@ end
 
 local function choose_target(state)
   vim.system(
-    command(state, "targets"),
+    command(state, "targets", state.session_folder),
     { text = true },
     vim.schedule_wrap(function(result)
       if result.code ~= 0 then
@@ -862,32 +866,16 @@ local function choose_target(state)
 end
 
 local function choose_binary(state)
-  local actions = require("telescope.actions")
-  require("telescope.builtin").find_files({
-    cwd = state.root,
-    no_ignore = true,
-    attach_mappings = function(buf)
-      actions.select_default:replace(function()
-        local entry = require("telescope.actions.state").get_selected_entry()
-        if not entry then
-          return
-        end
-        local path = entry.path or entry.value
-        actions.close(buf)
-        vim.schedule(function()
-          if vim.fn.executable(path) ~= 1 then
-            vim.notify("Choose an executable file", vim.log.levels.WARN)
-            return
-          end
-          state.config.binary = path:sub(1, #state.root + 1) == state.root .. "/"
-              and path:sub(#state.root + 2)
-            or path
-          changed(state)
-        end)
-      end)
-      return true
-    end,
-  })
+  vim.ui.input({
+    prompt = "Executable path (project-relative or absolute on selected host): ",
+    default = state.config.binary,
+  }, function(path)
+    if not path or vim.trim(path) == "" then
+      return
+    end
+    state.config.binary = vim.trim(path)
+    changed(state)
+  end)
 end
 
 local function preset(state)
@@ -1004,21 +992,61 @@ modify_row = function(state)
 end
 
 local function process_event(state, event)
-  if event.event == "start" then
+  if event.event == "session" then
+    state.session_folder, state.execution_mode = event.folder, event.mode
+    store.record_session(state.root, state.file, event.folder, event.mode)
+  elseif event.event == "sync" then
+    state.status = "Syncing source · " .. event.server
+  elseif event.event == "synced" then
+    state.status = "Source ready · "
+      .. event.server
+      .. " · "
+      .. event.uploaded
+      .. " changed files"
+    append_log(
+      state,
+      "Source "
+        .. event.revision:sub(1, 12)
+        .. " · "
+        .. event.files
+        .. " files · "
+        .. event.uploaded
+        .. " transferred"
+    )
+  elseif event.event == "sync_complete" then
+    state.status = "Source synchronized"
+  elseif event.event == "disconnected" then
+    state.disconnected = true
+    state.status = "DISCONNECTED · A reconnect"
+    append_log(state, event.message or "Job continues remotely")
+  elseif event.event == "remote_job" then
+    state.remote_jobs = state.remote_jobs or {}
+    state.remote_jobs[event.allocation] = event
+    state.status = event.status .. " · " .. event.server
+    if type(event.job_id) == "string" then
+      state.jobs = state.jobs or {}
+      local job = state.jobs[event.allocation] or {}
+      job.server, job.job_id, job.status = event.server, event.job_id, event.status
+      state.jobs[event.allocation] = job
+    end
+  elseif event.event == "cancel_requested" then
+    state.status = "Cancellation requested"
+  elseif event.event == "warning" then
+    append_log(state, event.message)
+  elseif event.event == "start" then
     state.runs[event.id] = vim.tbl_extend("force", event, { status = "RUNNING" })
     state.status = "Running " .. event.id .. "/" .. event.total .. " · " .. event.server
   elseif event.event == "finish" then
-    state.completed = (state.completed or 0) + 1
-    state.failed = (state.failed or 0) + (event.exit_code ~= 0 and 1 or 0)
+    local previous = state.runs[event.id]
+    if not previous or (previous.status ~= "SUCCESS" and previous.status ~= "FAILURE") then
+      state.completed = (state.completed or 0) + 1
+      state.failed = (state.failed or 0) + (event.exit_code ~= 0 and 1 or 0)
+    end
     state.runs[event.id] =
       vim.tbl_extend("force", event, { status = event.exit_code == 0 and "SUCCESS" or "FAILURE" })
   elseif event.event == "complete" then
     state.status = event.exit_code == 0 and "SUCCESS" or "FAILURE"
   elseif event.event == "submitted" or event.event == "job" then
-    if event.folder then
-      state.job_folder = event.folder
-      store.record_jobs(state.root, state.file, event.folder)
-    end
     state.jobs = state.jobs or {}
     local key = event.allocation or event.server
     local job = state.jobs[key] or {}
@@ -1070,40 +1098,53 @@ end
 
 action = function(state, mode, override)
   if state.task and state.task:is_running() then
-    vim.notify("This experiment is already running", vim.log.levels.INFO)
-    return
+    if mode == "cancel" then
+      state.generation = state.generation + 1
+      state.task:stop()
+    else
+      vim.notify("This experiment is already running", vim.log.levels.INFO)
+      return
+    end
   end
   load(state)
-  save(state)
+  if mode ~= "reconnect" and mode ~= "poll" and mode ~= "cancel" then
+    save(state)
+  end
   local config = override or state.resolved
   state.generation = state.generation + 1
-  if mode ~= "poll" and mode ~= "cancel" then
+  if mode ~= "poll" and mode ~= "cancel" and mode ~= "reconnect" then
     local directory = config.output_dir or "results/overseer"
     if not require("overseer.files").is_absolute(directory) then
       directory = state.root .. "/" .. directory
     end
     state.folder = directory .. "/" .. os.date("%Y%m%d-%H%M%S") .. "-" .. vim.uv.hrtime()
-  elseif not state.job_folder or vim.fn.filereadable(state.job_folder .. "/jobs.json") == 0 then
-    vim.notify("No submitted Slurm jobs for this experiment", vim.log.levels.INFO)
+  elseif
+    not state.session_folder or vim.fn.filereadable(state.session_folder .. "/session.json") == 0
+  then
+    vim.notify("No saved execution session for this experiment", vim.log.levels.INFO)
     return
   else
-    state.folder = state.job_folder
+    state.folder = state.session_folder
   end
-  if mode == "run" or mode == "submit" then
+  if mode == "run" or mode == "submit" or mode == "reconnect" or mode == "poll" then
     state.run_folder = state.folder
     state.active_plan = nil
     state.runs, state.completed, state.failed = {}, 0, 0
+    state.remote_jobs, state.jobs = {}, {}
   end
   state.log_request = (state.log_request or 0) + 1
   state.inspected_log = nil
   state.follow_logs = true
   state.logs = {}
+  state.disconnected = false
   state.status = mode .. "…"
   vim.fn.mkdir(state.folder, "p")
   local snapshot = state.folder .. "/launch.json"
-  local launch = vim.deepcopy(config)
-  launch.project = state.root
-  vim.fn.writefile({ vim.json.encode(launch) }, snapshot)
+  if mode ~= "reconnect" and mode ~= "poll" and mode ~= "cancel" then
+    local launch = vim.deepcopy(config)
+    launch.project = state.root
+    vim.fn.writefile({ vim.json.encode(launch) }, snapshot)
+  end
   local names = {
     run = "Run experiment",
     build = "Build experiment",
@@ -1111,7 +1152,9 @@ action = function(state, mode, override)
     export = "Export experiment",
     submit = "Submit Slurm experiment",
     poll = "Refresh Slurm jobs",
-    cancel = "Cancel Slurm jobs",
+    cancel = "Cancel saved jobs",
+    sync = "Synchronize source",
+    reconnect = "Reconnect to saved execution",
   }
   state.log_name = names[mode]
   local task = require("overseer").new_task({
@@ -1119,6 +1162,7 @@ action = function(state, mode, override)
     cwd = state.root,
     cmd = command(state, mode, state.folder, snapshot),
     strategy = { "jobstart", use_terminal = false },
+    components = { "on_exit_set_observer_status" },
     metadata = {
       experiment = true,
       results_output = true,
@@ -1128,19 +1172,30 @@ action = function(state, mode, override)
     },
   })
   state.task = task
+  local generation = state.generation
   task:subscribe("on_output_lines", function(_, lines)
-    on_lines(state, lines)
+    if state.generation == generation then
+      on_lines(state, lines)
+      task.metadata.observer_detached = state.disconnected
+    end
   end)
   task:subscribe("on_complete", function(_, status)
-    if status == "FAILURE" then
+    if state.generation ~= generation then
+      return
+    end
+    local operation = mode == "reconnect" and state.execution_mode or mode
+    if state.disconnected then
+      state.status = "DISCONNECTED · A reconnect"
+      state.view = "logs"
+    elseif status == "FAILURE" then
       state.status = "FAILURE"
       state.view = "logs"
     elseif status == "CANCELED" then
       state.status = "CANCELED"
-    elseif mode == "build" or mode == "configure" then
+    elseif operation == "build" or operation == "configure" then
       state.status = "Ready"
     end
-    if mode == "run" and state.active_plan then
+    if operation == "run" and state.active_plan and not state.disconnected then
       local first_failed
       for _, spec in ipairs(state.active_plan.runs) do
         local trial = state.runs[spec.id]
@@ -1223,11 +1278,15 @@ local function map_panel(state)
     S = "submit",
     u = "poll",
     X = "cancel",
+    A = "reconnect",
   }) do
     map(key, function()
       action(state, mode)
     end)
   end
+  map("Y", function()
+    require("overseer.remote").sync(state.root, true)
+  end)
   map("p", function()
     preset(state)
   end)
@@ -1249,8 +1308,17 @@ local function map_panel(state)
     render(state)
   end)
   map("x", function()
-    if state.task and state.task:is_running() then
+    if
+      state.task
+      and state.task:is_running()
+      and vim.fn.filereadable((state.folder or "") .. "/session.json") == 0
+    then
+      state.generation = state.generation + 1
       state.task:stop()
+      state.status = "CANCELED"
+      render(state)
+    else
+      action(state, "cancel")
     end
   end)
   map("e", function()
@@ -1275,16 +1343,9 @@ end
 
 local function open_state(state, focus)
   load(state)
-  if not state.job_folder then
-    state.job_folder = store.session(state.root, state.file).jobs_folder
-    if state.job_folder and vim.fn.filereadable(state.job_folder .. "/jobs.json") == 1 then
-      state.jobs = {}
-      for _, job in
-        ipairs(require("overseer.files").load_json_file(state.job_folder .. "/jobs.json"))
-      do
-        state.jobs[job.allocation] = job
-      end
-    end
+  if not state.session_folder then
+    local session = store.session(state.root, state.file)
+    state.session_folder, state.execution_mode = session.folder, session.mode
   end
   if not state.buf or not vim.api.nvim_buf_is_valid(state.buf) then
     state.buf = vim.api.nvim_create_buf(false, true)
@@ -1328,6 +1389,13 @@ local function open_state(state, focus)
   vim.wo[panel.win].winbar = ""
   refresh(state)
   render(state)
+  if
+    not state.task
+    and state.session_folder
+    and vim.fn.filereadable(state.session_folder .. "/session.json") == 1
+  then
+    action(state, "reconnect")
+  end
   return state
 end
 
@@ -1365,6 +1433,22 @@ end
 function M.run()
   local state = M.open(root(), true)
   action(state, "run")
+end
+
+function M.sync()
+  require("overseer.remote").sync(root(), true)
+end
+
+function M.reconnect()
+  local state = M.open(root(), true)
+  if not state.task or not state.task:is_running() then
+    action(state, "reconnect")
+  end
+end
+
+function M.cancel()
+  local state = M.open(root(), true)
+  action(state, "cancel")
 end
 
 function M.rerun(task)

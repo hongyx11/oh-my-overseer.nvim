@@ -4,6 +4,21 @@ local M = {}
 
 local commands = {
   {
+    cmd = "OverseerSync",
+    func = "_source_sync",
+    def = { desc = "Publish a captured source revision to selected remote hosts" },
+  },
+  {
+    cmd = "OverseerReconnect",
+    func = "_reconnect",
+    def = { desc = "Reconnect to the experiment's saved execution session" },
+  },
+  {
+    cmd = "OverseerExperimentCancel",
+    func = "_experiment_cancel",
+    def = { desc = "Cancel the experiment's owned process or Slurm jobs" },
+  },
+  {
     cmd = "OverseerExperiment",
     func = "_experiment",
     def = { desc = "Toggle the experiment configuration and progress panel" },
@@ -154,6 +169,7 @@ M.setup = function(opts)
   end
   local config = require("overseer.config")
   config.setup(opts)
+  require("overseer.remote").setup()
   M.enable_dap(config.dap)
   M.wrap_builtins(config.experimental_wrap_builtins.enabled)
 end

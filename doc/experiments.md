@@ -2,7 +2,7 @@
 
 Create named experiments, attach reusable options, and run the Cartesian product
 of their selected values. Options can be threads, tile size, precision, layout,
-iterations, or any other name. `nodes` is reserved for Slurm node requests.
+iterations, or any other name. `nodes` is reserved for Slurm node requests; `gpu_name` selects a Slurm GPU model.
 
 The centered floating panel uses 85% of the editor, resizes with it, and preserves
 source splits. Its configuration, runs, and live output views share one float
@@ -49,12 +49,17 @@ For example, save Threads with presets **development** `[1,2,4]` and **scaling**
 `[1,2,4,8,16]`. Attach Threads to SpMV and SpGEMM; each experiment can choose a
 different preset or override its selected values without changing the other.
 
-The shared library starts with **Threads** and **Slurm nodes**. Threads supplies
+The shared library starts with **Threads**, **Slurm nodes**, and **GPU name**. Threads supplies
 `--threads`, `OMP_NUM_THREADS`, and CPU requirements. An experiment may override
 its binding when its binary uses another flag or already includes `${threads}`
 in common arguments. Slurm nodes supplies choices 2/4/16, presets **small** and
 **scaling**, and the reserved `nodes` binding. It requests resources and does not
-append a program flag.
+append a program flag. GPU name offers L40S/H100 and named presets. It binds
+`slurm.gpu_name` to `${value}`; the planner turns the selected model into a typed
+GPU request. An explicit profile `gpus` or `gpus_per_node` count is preserved;
+without either, it requests one GPU of that model per node. For example, L40S
+with `gpus_per_node: 2` produces `--gpus-per-node=L40S:2`. GPU name requires a
+Slurm profile and does not choose a program binary or compiler architecture.
 
 The [SpMV example](../examples/spmv-experiment.json) is self-contained and uses
 SpCraft's real `bench_ompspmv` CLI: two coordinate matrices under `dataset/output`,
@@ -77,7 +82,8 @@ editor floats.
 | `s` on an option | Presets, values, bindings, publish, remove |
 | `N`, `O` | New/copy experiment, choose saved experiment |
 | `p`, `T`, `b` | Choose CMake preset, executable target, binary |
-| `C`, `B`, `r` | Configure, build, run combinations sequentially |
+| `C`, `B`, `r` | Sync source, configure, build, run combinations sequentially |
+| `Y`, `A` | Sync source, reconnect to the saved session |
 | `w`, `e`, `R` | Save, close float and edit JSON, reload |
 | `E`, `L` | Export a portable bundle, load another source JSON |
 | `S`, `u`, `X` | Submit Slurm jobs, refresh states, cancel recorded jobs |
@@ -201,8 +207,8 @@ The planner groups trials by server and resolved resource settings. Nodes
 2/4/16 produce three allocations/batch scripts. Interactive execution obtains
 one `salloc` allocation per group and runs its trials sequentially as `srun`
 steps. Batch submission creates one job per group, with a single controller.
-Separately submitted jobs may run concurrently. `jobs.json` tracks each allocation
-and job ID independently, including multiple allocations on the same host.
+Separately submitted jobs may run concurrently. `session.json` tracks each allocation, durable agent handle, and scheduler ID
+independently, including multiple allocations on the same host.
 
 A plain serial/OpenMP program uses one task on one node per step. For a distributed
 binary, configure a launcher, for example
@@ -213,11 +219,21 @@ and CPU settings remain profile policy. [Slurm salloc documentation](https://slu
 describes the allocation/controller lifetime.
 
 Supported resource fields: `partition`, `account`, `qos`, `constraint`, `gpus`,
+`gpus_per_node`,
 `cpus_per_task`, `memory`, `time`, `nodes`, and `ntasks`. Hosts use normal SSH
 configuration with BatchMode authentication. Remote project paths must be absolute;
-code, binaries, datasets, modules, and presets must already exist there. `setup`
-contains trusted shell commands. `enabled: false` disables an inherited profile.
-The runner does not synchronize files or convert an OpenMP binary into a GPU one.
+source is captured and synchronized automatically before execution. Datasets,
+modules, and build tools must exist there. Source-relative binaries are built
+inside the captured revision's workspace. `setup` contains trusted shell
+initialization, applied to the Slurm control shell and execution environment.
+`enabled: false` disables an inherited profile. GPU requests do not convert an
+OpenMP binary into a GPU program.
+
+Use `slurm_batch` for submission-only overrides. For example, lair requires
+`slurm: {"qos":"interactive"}` for interactive allocations and
+`slurm_batch: {"qos":"normal"}` for `sbatch`. Account, node/GPU choices, and
+other resource policy are shared unless explicitly overridden. Selected resource
+options take precedence over profile defaults in both execution paths.
 
 ## CMake and export
 
@@ -246,7 +262,7 @@ under the old directory without rewriting custom command arrays. Failed builds
 prevent that group's trials; `stop_on_failure` controls subsequent work.
 
 `E` exports resolved `experiment.json`, expanded `manifest.json`, standalone
-`runner.py`, and one `<allocation>.sbatch` per group. Definitions and selections
+`runner.py` with its stdlib-only agent/client modules, and one `<allocation>.sbatch` per group. Definitions and selections
 are embedded, so the bundle needs neither Neovim nor the shared option library:
 
 ```bash
@@ -254,6 +270,7 @@ python3 runner.py run experiment.json
 python3 runner.py submit experiment.json --output-dir submitted
 python3 runner.py poll experiment.json --output-dir submitted
 python3 runner.py cancel experiment.json --output-dir submitted
+python3 runner.py reconnect experiment.json --output-dir submitted
 ```
 
 Use `--project /path/to/project` after relocating a bundle. Source configs with
@@ -266,6 +283,89 @@ logs/results remain on the server and can be read from Runs over SSH. Submitted
 progress is job state plus saved logs; interactive runs stream per-trial progress.
 State is read with `squeue` then `sacct`. Cancellation affects only the recorded
 job IDs. Scheduler exit status cannot hide failed or unstarted trials.
+
+## Remote development architecture
+
+Remote development covers source synchronization, configure/build/run, Slurm,
+persistent state, and resumable logs. Language services are outside this scope.
+
+The earlier system had two execution owners: the editor's YAML upload/task queue
+and the experiment runner's foreground SSH process. Neither could restore an
+interactive job after the observer disappears. The replacement uses the
+experiment's existing server profiles as the only connection configuration.
+This replaces the earlier YAML-only upload/task subsystem.
+
+| State or decision | Authoritative owner | Observers |
+| --- | --- | --- |
+| Option resolution, combinations, resources, command arguments | Portable experiment planner | Panel and execution session |
+| Captured source bytes and revision identity | Source snapshot transaction | SSH transport and remote agent |
+| Published revisions and content objects | Remote project store | Job worker |
+| Job launch, process lifetime, cancellation, terminal outcome | Detached agent worker | SSH client and panel |
+| Slurm allocation, execution, scheduler outcome | Slurm, observed through the agent | Client and panel |
+| Complete output and byte positions | Remote job log | Reconnecting observers |
+| Last session handle | Project experiment metadata | Panel reopening after restart |
+
+Intentional replacements: remote source is published into separate revision
+workspaces; later saves create another revision instead of mutating an active
+job's source. Foreground SSH becomes an observer of a durable remote job. Closing
+an observer detaches; explicit cancellation stops the owned process or recorded
+Slurm job. A repeated launch with the same job ID observes that job rather than
+launching twice. A lost worker is reported explicitly, never automatically
+restarted. The YAML-only uploader/task queue and its callers have been removed. Existing parameter
+semantics and standalone exports are preserved.
+
+Acceptance checks cover changed-file transfer, deleted and renamed source,
+exclusions, snapshot isolation, failed synchronization blocking launch,
+idempotent launch, reconnect with exact log positions, cancellation while queued
+or running, process loss, scheduler errors, and local/SSH transport equivalence.
+Unit tests use an executable scheduler fixture. Live integration checks use the
+explicitly authorized lair testbed with account `yuxilab` and a small allocation.
+The active Neovim integration calls these same owners; no separate upload/task
+state machine remains.
+
+## Source revisions and agent installation
+
+Each connection installs the versioned, stdlib-only Linux agent through normal
+SSH authentication. `~/.local/bin/omo` points to that version. No remote Neovim,
+new network port, administrator permissions, or Python package installation is
+required. Inspect a project directly with:
+
+```bash
+omo --version
+omo list --root /absolute/project
+omo logs --root /absolute/project --job <agent-job-id>
+omo cancel --root /absolute/project --job <agent-job-id>
+```
+
+`sync.on_save: true` enables coalesced saved-source publication; `Y` and
+`:OverseerSync` synchronize manually. `sync.exclude` adds glob exclusions;
+`sync.mounts` declares top-level directories kept remotely. Build directories,
+Git/editor/OMO metadata, datasets, results, caches, virtual environments, and the
+local compilation database are excluded by default. Relative source symlinks
+are retained; links outside the source project are rejected.
+
+Content checksums and executable modes define the source revision. Build
+commands, preset, target, host setup/environment, and GPU option selection also
+separate build workspaces. Changing a build configuration never reuses another
+configuration's build cache. Objects transfer once; complete revisions publish
+atomically and preserve deletions/renames without modifying the remote checkout.
+Build settings therefore share data objects but use separate workspaces.
+
+The agent saves requests, Linux process identities, scheduler IDs, output, and
+terminal states under the configured remote project's `.omo/`. Closing an
+observer detaches. Reopening the panel restores the saved session; `A` or
+`:OverseerReconnect` explicitly resumes it. Interactive groups stay sequential:
+the active group continues remotely during disconnection, and reconnect resumes
+any remaining saved groups. Batch jobs continue under Slurm independently.
+`x` or `:OverseerExperimentCancel` explicitly cancels owned jobs.
+
+Local launch snapshots and receipts are retained. A new launch requires a fresh
+output directory; use `reconnect` for an existing session. Log mirrors are scoped
+to durable job IDs, and observers resume at exact byte positions. Reconnection
+never rewrites the frozen launch, resolves current shared presets, or starts a
+second copy of an accepted job. Lost supervisors are reported as lost. Historical
+source revisions, logs, and build workspaces remain available; retention cleanup
+is not automatic.
 
 ## Ownership and schema change
 

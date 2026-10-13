@@ -4,6 +4,9 @@
 from __future__ import annotations
 
 import argparse
+import base64
+import codecs
+from contextlib import ExitStack
 from collections import deque
 import copy
 import datetime as dt
@@ -17,6 +20,10 @@ import shutil
 import signal
 import subprocess
 import sys
+import time
+import uuid
+
+from omo_client import Connection, SourceSnapshot
 
 MARKER = "@@OVERSEER "
 RESOURCE_FLAGS = {
@@ -25,6 +32,7 @@ RESOURCE_FLAGS = {
     "qos": "qos",
     "constraint": "constraint",
     "gpus": "gpus",
+    "gpus_per_node": "gpus-per-node",
     "cpus_per_task": "cpus-per-task",
     "memory": "mem",
     "time": "time",
@@ -46,7 +54,9 @@ def read(path):
 def write(path, data):
     path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+    temporary = path.with_name(path.name + "." + uuid.uuid4().hex)
+    temporary.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+    temporary.replace(path)
 
 
 def merge(base, child):
@@ -85,6 +95,61 @@ def selected_entries(option):
     return result
 
 
+def node_value(value):
+    return not isinstance(value, bool) and str(value).isdigit() and int(value) > 0
+
+
+def gpu_value(value):
+    return isinstance(value, str) and re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", value)
+
+
+RESERVED_RESOURCES = {"nodes": node_value, "gpu_name": gpu_value}
+
+
+def validate_resource_option(option, validate_value):
+    name = option["id"]
+    if option.get("slurm", {}).get(name) != "${value}" or any(
+        option.get(k) for k in ("args", "environment", "launcher")
+    ):
+        raise ValueError(
+            name
+            + " is reserved for Slurm requests; bind slurm."
+            + name
+            + " to ${value}"
+        )
+    for choice in option["choices"]:
+        if (
+            any(choice.get(k) for k in ("args", "arguments", "environment", "launcher"))
+            or "path" in choice
+        ):
+            raise ValueError("Slurm " + name + " choices contain resource values only")
+        if not validate_value(choice.get("value", choice["id"])):
+            raise ValueError(
+                "Slurm "
+                + name
+                + " choices must contain "
+                + ("positive integers" if name == "nodes" else "GPU model names")
+            )
+
+
+def gpu_resources(resources):
+    if resources is None or "gpu_name" not in resources:
+        return resources
+    result = copy.deepcopy(resources)
+    name = result.pop("gpu_name")
+    if not gpu_value(name):
+        raise ValueError("Invalid Slurm GPU name")
+    keys = [key for key in ("gpus", "gpus_per_node") if key in result] or [
+        "gpus_per_node"
+    ]
+    for key in keys:
+        count = str(result.get(key, 1)).rsplit(":", 1)[-1]
+        if not node_value(count):
+            raise ValueError("GPU count must be a positive integer")
+        result[key] = name + ":" + count
+    return result
+
+
 def resolve_config(source, library):
     if source.get("version") != 2:
         raise ValueError("Experiment must use the parameter-list schema (version 2)")
@@ -95,6 +160,17 @@ def resolve_config(source, library):
             or any(not isinstance(v, (str, int, float)) for v in config[field])
         ):
             raise ValueError(field + " must be an array of argument values")
+    sync = config.get("sync", {})
+    if not isinstance(sync, dict):
+        raise ValueError("sync must be an object")
+    if "on_save" in sync and not isinstance(sync["on_save"], bool):
+        raise ValueError("sync.on_save must be true or false")
+    for field in ("exclude", "mounts"):
+        if field in sync and (
+            not isinstance(sync[field], list)
+            or any(not isinstance(v, str) or not v for v in sync[field])
+        ):
+            raise ValueError("sync." + field + " must be a list of strings")
     parameters, ids = [], set()
     reserved = {
         "project",
@@ -139,23 +215,16 @@ def resolve_config(source, library):
         selected_entries(option)
         for saved in option.get("presets", {}).values():
             selected_entries({**option, "selected": saved})
-        if "nodes" in option.get("slurm", {}) and name != "nodes":
-            raise ValueError("Slurm nodes must use the reserved option name nodes")
-        if name == "nodes":
-            if option.get("slurm", {}).get("nodes") != "${value}" or option.get("args"):
+        for resource_name in RESERVED_RESOURCES:
+            if resource_name in option.get("slurm", {}) and name != resource_name:
                 raise ValueError(
-                    "nodes is reserved for Slurm requests; bind slurm.nodes to ${value}"
+                    "Slurm "
+                    + resource_name
+                    + " must use the reserved option name "
+                    + resource_name
                 )
-            for choice in option["choices"]:
-                if choice.get("args") or choice.get("arguments") or "path" in choice:
-                    raise ValueError("Slurm nodes choices contain node counts only")
-                value = choice.get("value", choice["id"])
-                if (
-                    isinstance(value, bool)
-                    or not str(value).isdigit()
-                    or int(value) < 1
-                ):
-                    raise ValueError("Slurm node counts must be positive integers")
+        if name in RESERVED_RESOURCES:
+            validate_resource_option(option, RESERVED_RESOURCES[name])
         parameters.append(option)
     config["parameters"] = parameters
     return config
@@ -236,6 +305,17 @@ def validate_profile(profile, resources, cpus):
             raise ValueError("Set an absolute remote project_dir for " + profile["id"])
     if resources is None:
         return
+    for key in ("gpus", "gpus_per_node"):
+        if key in resources and not re.fullmatch(
+            r"(?:[A-Za-z0-9][A-Za-z0-9_.-]*:)?[1-9][0-9]*", str(resources[key])
+        ):
+            raise ValueError(key + " must be a positive count or GPU-name:count")
+    if "gpus" in resources and int(str(resources["gpus"]).rsplit(":", 1)[-1]) < int(
+        resources.get("nodes", 1)
+    ):
+        raise ValueError(
+            "Total GPUs must include at least one GPU per requested node; use gpus_per_node for per-node counts"
+        )
     unknown = set(resources) - set(RESOURCE_FLAGS)
     if unknown:
         raise ValueError("Unknown Slurm resource fields: " + ", ".join(sorted(unknown)))
@@ -257,7 +337,11 @@ def option_value(option, choice, root, profile):
             if name in choice.get("paths", {}):
                 value = choice["paths"][name]
                 break
-        value = path_on_server(value, root, profile)
+        value = path_on_server(
+            value,
+            root,
+            {**profile, "project_dir": profile.get("data_dir", profile["project_dir"])},
+        )
     return value
 
 
@@ -282,7 +366,10 @@ def plan(config, root, output_dir, validate):
                 + "/"
                 + Path(output_dir).name,
                 root,
-                profile,
+                {
+                    **profile,
+                    "project_dir": profile.get("data_dir", profile["project_dir"]),
+                },
             )
         )
         groups = {}
@@ -312,6 +399,11 @@ def plan(config, root, output_dir, validate):
                 **profile.get("environment", {}),
             }
             resources = copy.deepcopy(profile.get("slurm"))
+            batch_resources = (
+                merge(resources or {}, profile.get("slurm_batch", {}))
+                if resources is not None
+                else None
+            )
             cpus = 1
             for option, choice in zip(options, combination):
                 local = {**variables, "value": parameters[option["id"]]}
@@ -347,10 +439,11 @@ def plan(config, root, output_dir, validate):
                             + option["id"]
                             + " requests Slurm resources; select a Slurm server profile"
                         )
-                    resources = {
-                        **(resources or {}),
-                        **{k: expand(v, local) for k, v in binding.items()},
-                    }
+                    resolved_binding = {k: expand(v, local) for k, v in binding.items()}
+                    resources = {**(resources or {}), **resolved_binding}
+                    batch_resources = {**(batch_resources or {}), **resolved_binding}
+            resources = gpu_resources(resources)
+            batch_resources = gpu_resources(batch_resources)
             if cpus < 1:
                 raise ValueError("CPU requirements must be positive")
             if validate and not binary:
@@ -384,6 +477,7 @@ def plan(config, root, output_dir, validate):
                     "server": profile["id"],
                     "profile": profile,
                     "slurm": resources,
+                    "batch_resources": batch_resources,
                     "run_ids": [],
                 }
             groups[key]["run_ids"].append(number)
@@ -391,7 +485,14 @@ def plan(config, root, output_dir, validate):
             groups["empty"] = {
                 "server": profile["id"],
                 "profile": profile,
-                "slurm": profile.get("slurm"),
+                "slurm": gpu_resources(profile.get("slurm")),
+                "batch_resources": (
+                    gpu_resources(
+                        merge(profile.get("slurm", {}), profile.get("slurm_batch", {}))
+                    )
+                    if "slurm" in profile
+                    else None
+                ),
                 "run_ids": [],
             }
         for index, allocation in enumerate(groups.values(), 1):
@@ -407,13 +508,16 @@ def plan(config, root, output_dir, validate):
                 allocation["slurm"].setdefault(
                     "ntasks", int(allocation["slurm"].get("nodes", 1))
                 )
-            allocation["batch_resources"] = (
-                copy.deepcopy(allocation["slurm"])
-                if allocation["slurm"] is not None
-                else {"cpus_per_task": cpus, "ntasks": 1}
-            )
+            if allocation["batch_resources"] is None:
+                allocation["batch_resources"] = {"cpus_per_task": cpus, "ntasks": 1}
+            else:
+                allocation["batch_resources"].setdefault("cpus_per_task", cpus)
+                allocation["batch_resources"].setdefault(
+                    "ntasks", int(allocation["batch_resources"].get("nodes", 1))
+                )
             if validate:
                 validate_profile(profile, allocation["slurm"], cpus)
+                validate_profile(profile, allocation["batch_resources"], cpus)
             allocations.append(allocation)
     return {
         "version": 2,
@@ -533,58 +637,10 @@ def script(config, manifest, allocation, mode, batch):
     return "\n".join([*lines, ""])
 
 
-def ssh(profile, command, tty):
-    return [
-        "ssh",
-        "-tt" if tty else "-T",
-        "-o",
-        "BatchMode=yes",
-        *profile.get("ssh_options", []),
-        profile["host"],
-        command,
-    ]
-
-
 def allocation_args(resources):
     return [
         "--" + RESOURCE_FLAGS[k] + "=" + str(v) for k, v in resources.items() if v != ""
     ]
-
-
-def execute(argv, on_event, log):
-    process = subprocess.Popen(
-        argv,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        text=True,
-        start_new_session=True,
-    )
-
-    def interrupt(signum, _frame):
-        os.killpg(process.pid, signal.SIGTERM)
-        try:
-            process.wait(timeout=5)
-        except subprocess.TimeoutExpired:
-            os.killpg(process.pid, signal.SIGKILL)
-        raise KeyboardInterrupt
-
-    previous = {
-        sig: signal.signal(sig, interrupt)
-        for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
-    }
-    try:
-        with Path(log).open("w") as output:
-            for line in process.stdout:
-                print(line, end="", flush=True)
-                output.write(line)
-                clean = line.strip()
-                if clean.startswith(MARKER):
-                    event = json.loads(clean[len(MARKER) :])
-                    on_event(event)
-        return process.wait()
-    finally:
-        for sig, handler in previous.items():
-            signal.signal(sig, handler)
 
 
 def export(config, root, folder):
@@ -597,15 +653,22 @@ def export(config, root, folder):
     write(folder / "manifest.json", manifest)
     if Path(__file__).resolve() != (folder / "runner.py").resolve():
         shutil.copyfile(__file__, folder / "runner.py")
+    for name in ("omo_client.py", "omo_agent.py"):
+        source = Path(__file__).resolve().with_name(name)
+        if source != (folder / name).resolve():
+            shutil.copyfile(source, folder / name)
     for allocation in manifest["allocations"]:
         text = script(config, manifest, allocation, "run", True)
         (folder / (allocation["id"] + ".sbatch")).write_text(text)
     return manifest
 
 
-def run(config, root, folder, mode):
-    folder.mkdir(parents=True, exist_ok=True)
-    manifest = plan(config, root, folder, mode == "run")
+class Detached(Exception):
+    pass
+
+
+def execution_manifest(config, root, folder, mode):
+    manifest = plan(config, root, folder, mode in {"run", "submit"})
     for allocation in manifest["allocations"]:
         cpus = max(
             (
@@ -617,157 +680,348 @@ def run(config, root, folder, mode):
         )
         if allocation["slurm"] is not None and "slurm" not in allocation["profile"]:
             raise ValueError("Select a Slurm server profile for resource options")
-        validate_profile(allocation["profile"], allocation["slurm"], cpus)
-    write(folder / "manifest.json", manifest)
-    results, events = [], []
+        validate_profile(
+            allocation["profile"],
+            allocation["batch_resources"] if mode == "submit" else allocation["slurm"],
+            cpus,
+        )
+        if mode == "submit" and allocation["slurm"] is None:
+            raise ValueError(
+                "Select Slurm resources before submission on " + allocation["server"]
+            )
+    return manifest
 
-    def record(event):
-        events.append(event)
-        if event.get("event") == "finish":
-            results.append(event)
-            write(
-                folder / "results.json",
+
+def setup_lines(profile):
+    lines = list(profile.get("setup", []))
+    for key, value in profile.get("environment", {}).items():
+        if "${" not in str(value):
+            lines.append("export " + key + "=" + shlex.quote(str(value)))
+    return lines
+
+
+def source_config(config, root, manifest, connections):
+    prepared = copy.deepcopy(config)
+    choices = {p["id"]: p for p in prepared["servers"]["choices"]}
+    remote = [p for p in manifest["profiles"] if p.get("kind", "local") == "ssh"]
+    if not remote:
+        return prepared
+    policy = config.get("sync", {})
+    excludes = list(policy.get("exclude", []))
+    directory = config.get("build", {}).get("directory", "build")
+    if not Path(directory).is_absolute():
+        excludes.append(directory.rstrip("/") + "/")
+    with SourceSnapshot(
+        root, excludes, policy.get("mounts", ["dataset", "datasets"])
+    ) as snapshot:
+        published = {}
+        for profile in remote:
+            context = {
+                "build": config.get("build", {}),
+                "preset": config.get("preset", ""),
+                "target": config.get("target", ""),
+                "setup": profile.get("setup", []),
+                "environment": profile.get("environment", {}),
+                "gpu_options": [
+                    option
+                    for option in config.get("parameters", [])
+                    if option["id"] == "gpu_name"
+                ],
+            }
+            key = (
+                profile["host"],
+                profile["project_dir"],
+                json.dumps(context, sort_keys=True),
+            )
+            emit("sync", server=profile["id"])
+            if key not in published:
+                published[key] = snapshot.publish(connections[profile["id"]], context)
+            revision = published[key]
+            emit("synced", server=profile["id"], **revision)
+            choice = choices[profile["id"]]
+            choice.update(
                 {
-                    "total": manifest["total"],
-                    "completed": len(results),
-                    "runs": results,
+                    "project_dir": revision["workspace"],
+                    "data_dir": profile["project_dir"],
+                    "agent_root": profile["project_dir"],
+                    "revision": revision["revision"],
+                }
+            )
+    return prepared
+
+
+class JobObserver:
+    def __init__(self, connection, entry, folder, record):
+        self.connection, self.entry, self.record = connection, entry, record
+        self.path = folder / (entry["allocation"] + "." + entry["job"] + ".log")
+        self.cursor = 0
+        self.pending = ""
+        self.decoder = codecs.getincrementaldecoder("utf-8")("replace")
+        if self.path.exists():
+            with self.path.open("rb") as stream:
+                for chunk in iter(lambda: stream.read(256 * 1024), b""):
+                    self.consume(chunk)
+                    self.cursor += len(chunk)
+
+    def consume(self, data):
+        text = self.decoder.decode(data)
+        print(text, end="", flush=True)
+        self.pending += text
+        while "\n" in self.pending:
+            line, self.pending = self.pending.split("\n", 1)
+            if line.startswith(MARKER):
+                try:
+                    self.record(json.loads(line[len(MARKER) :]))
+                except ValueError:
+                    pass
+
+    def observe(self):
+        value = self.connection.request(
+            "observe", {"job": self.entry["job"], "cursor": self.cursor}
+        )
+        data = base64.b64decode(value["data"])
+        if data:
+            with self.path.open("ab") as output:
+                output.write(data)
+                output.flush()
+            self.consume(data)
+        self.cursor = value["cursor"]
+        state = value["state"]
+        old = self.entry.get("state", {})
+        if state.get("status") != old.get("status") or state.get("job_id") != old.get(
+            "job_id"
+        ):
+            emit(
+                "remote_job",
+                server=self.entry["server"],
+                allocation=self.entry["allocation"],
+                job=self.entry["job"],
+                folder=self.entry["client_folder"],
+                **{k: state[k] for k in ("status", "terminal", "job_id", "exit_code")},
+            )
+        if state.get("observation_error") and state.get("observation_error") != old.get(
+            "observation_error"
+        ):
+            emit("warning", message=state["observation_error"])
+        self.entry["state"] = state
+        return state, value["drained"]
+
+
+class ExecutionSession:
+    def __init__(self, folder):
+        self.folder = Path(folder)
+        self.agent = Path(__file__).resolve().with_name("omo_agent.py")
+        self.receipt = self.folder / "session.json"
+        self.resources = ExitStack()
+        self.connections = {}
+        self.results = {}
+        self.data = None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, kind, value, traceback):
+        self.resources.close()
+
+    def connection(self, profile):
+        key = (
+            profile.get("kind", "local"),
+            profile.get("host", ""),
+            profile.get("agent_root", profile["project_dir"]),
+            tuple(profile.get("ssh_options", [])),
+        )
+        if key not in self.connections:
+            endpoint = {
+                **profile,
+                "project_dir": profile.get("agent_root", profile["project_dir"]),
+            }
+            self.connections[key] = self.resources.enter_context(
+                Connection(endpoint, self.agent)
+            )
+        return self.connections[key]
+
+    def checkpoint(self):
+        write(self.receipt, self.data)
+
+    def record(self, event):
+        if event.get("event") == "finish":
+            self.results[event["id"]] = event
+            write(
+                self.folder / "results.json",
+                {
+                    "total": self.data["total"],
+                    "completed": len(self.results),
+                    "runs": list(self.results.values()),
                 },
             )
 
-    code = 0
-    for allocation in manifest["allocations"]:
-        profile = allocation["profile"]
-        text = script(config, manifest, allocation, mode, False)
-        argv = ["bash", "-c", text]
-        if allocation["slurm"] is not None:
-            emit(
-                "allocation",
-                server=profile["id"],
-                allocation=allocation["id"],
-                slurm=allocation["slurm"],
+    def prepare(self, config, root, mode):
+        if self.receipt.exists():
+            raise ValueError(
+                "This output directory already owns an execution session; reconnect or choose another directory"
             )
-            argv = [
-                "salloc",
-                *allocation_args(allocation["slurm"]),
-                "bash",
-                "-lc",
-                text,
-            ]
-        if profile.get("kind") == "ssh":
-            argv = ssh(profile, shlex.join(argv), True)
-        emit("server", server=profile["id"], allocation=allocation["id"])
-        previous_runs, previous_events = len(results), len(events)
-        status = execute(argv, record, folder / (allocation["id"] + ".log"))
-        new_runs = results[previous_runs:]
-        new_events = events[previous_events:]
-        finished = (
-            len(new_runs) == len(allocation["run_ids"])
-            if mode == "run"
-            else any(e.get("event") == "built" for e in new_events)
+        self.folder.mkdir(parents=True, exist_ok=True)
+        launch = self.folder / "launch.json"
+        if not launch.exists():
+            write(launch, {**config, "project": str(root)})
+        baseline = execution_manifest(config, root, self.folder, mode)
+        connections = {p["id"]: self.connection(p) for p in baseline["profiles"]}
+        prepared = source_config(config, root, baseline, connections)
+        manifest = execution_manifest(prepared, root, self.folder, mode)
+        write(self.folder / "manifest.json", manifest)
+        entries = []
+        for allocation in manifest["allocations"]:
+            profile = allocation["profile"]
+            job = uuid.uuid4().hex
+            launcher = (
+                ["salloc", *allocation_args(allocation["slurm"])]
+                if allocation["slurm"] is not None and mode != "submit"
+                else []
+            )
+            request = {
+                "job": job,
+                "revision": profile.get("revision"),
+                "script": script(
+                    prepared,
+                    manifest,
+                    allocation,
+                    "run" if mode == "submit" else mode,
+                    mode == "submit",
+                ),
+                "scheduler": "slurm" if mode == "submit" else "process",
+                "launcher": launcher,
+                "setup": setup_lines(profile),
+                "resources": (
+                    allocation["batch_resources"]
+                    if mode == "submit"
+                    else allocation["slurm"] or {}
+                ),
+                "server": profile["id"],
+                "allocation": allocation["id"],
+                "client_folder": str(self.folder),
+                "expected_runs": (
+                    allocation["run_ids"] if mode in {"run", "submit"} else []
+                ),
+                "expected_build": (
+                    profile["id"] if mode in {"build", "configure"} else None
+                ),
+                "trial_logs": {
+                    str(r["id"]): r["folder"] + "/output.log"
+                    for r in manifest["runs"]
+                    if r["id"] in allocation["run_ids"]
+                },
+            }
+            entries.append(
+                {
+                    "job": job,
+                    "profile": profile,
+                    "allocation": allocation["id"],
+                    "server": profile["id"],
+                    "client_folder": str(self.folder),
+                    "request": request,
+                    "attempted": False,
+                }
+            )
+        self.data = {
+            "mode": mode,
+            "total": manifest["total"],
+            "stop_on_failure": manifest["stop_on_failure"],
+            "entries": entries,
+        }
+        self.checkpoint()
+        emit("session", folder=str(self.folder), mode=mode)
+
+    def restore(self):
+        self.data = read(self.receipt)
+        emit("session", folder=str(self.folder), mode=self.data["mode"])
+
+    def observer(self, entry):
+        return JobObserver(
+            self.connection(entry["profile"]), entry, self.folder, self.record
         )
-        failed = (
-            status != 0 or not finished or any(r["exit_code"] != 0 for r in new_runs)
+
+    def launch(self, entry):
+        entry["attempted"] = True
+        self.checkpoint()
+        self.connection(entry["profile"]).request("launch", entry["request"])
+
+    def follow(self, entry, submission):
+        observer = self.observer(entry)
+        while True:
+            state, drained = observer.observe()
+            self.checkpoint()
+            if drained and (
+                state["terminal"] or (submission and state["job_id"] is not None)
+            ):
+                return state["exit_code"] or 0
+            time.sleep(0.2)
+
+    def execute(self, submission):
+        code = 0
+        try:
+            for entry in self.data["entries"]:
+                self.launch(entry)
+                status = self.follow(entry, submission)
+                code = max(code, status)
+                if status and self.data["stop_on_failure"]:
+                    break
+        except KeyboardInterrupt:
+            self.cancel()
+            emit("canceled")
+            return 130
+        emit(
+            "complete",
+            total=self.data["total"],
+            completed=len(self.results),
+            failed=sum(e["exit_code"] != 0 for e in self.results.values()),
         )
-        failed = failed or any(e.get("event") == "build_failed" for e in new_events)
-        code = max(code, int(failed))
-        if failed and manifest["stop_on_failure"]:
-            break
-    emit(
-        "complete",
-        total=manifest["total"],
-        completed=len(results),
-        failed=sum(r["exit_code"] != 0 for r in results),
-        exit_code=code,
-        folder=str(folder),
-    )
-    return code
+        return code
+
+    def cancel(self):
+        for entry in self.data["entries"]:
+            if entry["attempted"]:
+                self.connection(entry["profile"]).request(
+                    "cancel", {"job": entry["job"]}
+                )
+        emit("cancel_requested")
+        return 0
+
+    def poll(self):
+        for entry in self.data["entries"]:
+            if entry["attempted"]:
+                self.observer(entry).observe()
+        self.checkpoint()
+        return 0
+
+
+def run(config, root, folder, mode):
+    with ExecutionSession(folder) as session:
+        session.prepare(config, root, mode)
+        return session.execute(mode == "submit")
 
 
 def submit(config, root, folder):
-    manifest = export(config, root, folder)
-    for allocation in manifest["allocations"]:
-        if allocation["slurm"] is None:
-            raise ValueError(
-                "Add Slurm resources to profile "
-                + allocation["server"]
-                + " before submitting"
-            )
-    jobs = []
-    for allocation in manifest["allocations"]:
-        profile = allocation["profile"]
-        text = (folder / (allocation["id"] + ".sbatch")).read_text()
-        argv = ["sbatch", "--parsable"]
-        if profile.get("kind") == "ssh":
-            argv = ssh(profile, shlex.join(argv), False)
-        result = subprocess.run(
-            argv, input=text, text=True, capture_output=True, check=True
-        )
-        job_id = result.stdout.strip().split(";", 1)[0]
-        if not job_id.isdigit():
-            raise ValueError("Unexpected sbatch job ID: " + result.stdout)
-        job = {
-            "server": profile["id"],
-            "allocation": allocation["id"],
-            "slurm": allocation["slurm"],
-            "job_id": job_id,
-            "profile": profile,
-        }
-        jobs.append(job)
-        write(folder / "jobs.json", jobs)
-        emit(
-            "submitted",
-            server=profile["id"],
-            allocation=allocation["id"],
-            slurm=allocation["slurm"],
-            job_id=job_id,
-            folder=str(folder),
-        )
-    return 0
+    return run(config, root, folder, "submit")
 
 
 def job_action(folder, action):
-    jobs = read(folder / "jobs.json")
-    for job in jobs:
-        profile, job_id = job["profile"], job["job_id"]
-        argv = (
-            ["scancel", job_id]
-            if action == "cancel"
-            else ["squeue", "--noheader", "--jobs", job_id, "--format", "%T"]
-        )
-        if profile.get("kind") == "ssh":
-            argv = ssh(profile, shlex.join(argv), False)
-        result = subprocess.run(argv, text=True, capture_output=True, check=True)
-        status = "CANCELED" if action == "cancel" else result.stdout.strip()
-        if action == "poll" and not status:
-            argv = [
-                "sacct",
-                "--noheader",
-                "--parsable2",
-                "--jobs",
-                job_id,
-                "--format",
-                "JobIDRaw,State",
-            ]
-            if profile.get("kind") == "ssh":
-                argv = ssh(profile, shlex.join(argv), False)
-            result = subprocess.run(argv, text=True, capture_output=True, check=True)
-            status = next(
-                (
-                    line.split("|")[1]
-                    for line in result.stdout.splitlines()
-                    if line.split("|")[0] == job_id
-                ),
-                "UNKNOWN",
-            )
-        job["status"] = status
-        emit(
-            "job",
-            server=job["server"],
-            allocation=job["allocation"],
-            job_id=job_id,
-            status=status,
-        )
-    write(folder / "jobs.json", jobs)
+    with ExecutionSession(folder) as session:
+        session.restore()
+        return {
+            "poll": session.poll,
+            "cancel": session.cancel,
+            "reconnect": lambda: session.execute(False),
+        }[action]()
+
+
+def synchronize(config, root, folder):
+    with ExecutionSession(folder) as session:
+        baseline = plan(config, root, folder, False)
+        for profile in baseline["profiles"]:
+            validate_profile(profile, None, 1)
+        connections = {p["id"]: session.connection(p) for p in baseline["profiles"]}
+        source_config(config, root, baseline, connections)
+    emit("sync_complete")
     return 0
 
 
@@ -777,6 +1031,31 @@ def dispatch(args):
         return 0
     if args.action == "format":
         write(args.config, read(args.config))
+        return 0
+    if args.action in {"poll", "cancel", "reconnect", "log"}:
+        if not args.output_dir:
+            raise ValueError("Use --output-dir for the saved execution session")
+        folder = Path(args.output_dir).resolve()
+        if args.action != "log":
+            return job_action(folder, args.action)
+        if args.run_id is None:
+            raise ValueError("Use --run-id to view a trial log")
+        with ExecutionSession(folder) as session:
+            session.data = read(session.receipt)
+            entry = next(
+                (
+                    e
+                    for e in session.data["entries"]
+                    if args.run_id in e["request"]["expected_runs"]
+                ),
+                None,
+            )
+            if entry is None:
+                raise ValueError("Unknown run ID")
+            result = session.connection(entry["profile"]).request(
+                "trial_log", {"job": entry["job"], "run_id": args.run_id}
+            )
+            print(base64.b64decode(result["data"]).decode(errors="replace"), end="")
         return 0
     config, root = load_config(args.config, args.project, args.library)
     if args.action == "resolve":
@@ -788,24 +1067,20 @@ def dispatch(args):
         if args.output_dir
         else root / config.get("output_dir", "results/overseer") / stamp
     )
-    if args.action == "log":
-        if args.run_id is None or not args.output_dir:
-            raise ValueError("Use --run-id and --output-dir to view a run log")
-        manifest = read(folder / "manifest.json")
-        trial = next((r for r in manifest["runs"] if r["id"] == args.run_id), None)
-        if not trial:
-            raise ValueError("Unknown run ID")
-        profile = next(p for p in manifest["profiles"] if p["id"] == trial["server"])
-        log = str(Path(trial["folder"]) / "output.log")
-        if profile.get("kind") == "ssh":
-            subprocess.run(
-                ssh(profile, shlex.join(["tail", "-n", "300", log]), False), check=True
-            )
-        else:
-            with Path(log).open() as source:
-                print("".join(deque(source, maxlen=300)), end="")
-        return 0
     if args.action == "targets":
+        if args.output_dir and (folder / "session.json").is_file():
+            with ExecutionSession(folder) as session:
+                session.data = read(session.receipt)
+                entry = session.data["entries"][0]
+                result = session.connection(entry["profile"]).request(
+                    "targets",
+                    {
+                        "job": entry["job"],
+                        "build_dir": config.get("build", {}).get("directory", "build"),
+                    },
+                )
+                print(json.dumps(result))
+                return 0
         directory = root / config.get("build", {}).get("directory", "build")
         reply = directory / ".cmake/api/v1/reply"
         indexes = sorted(reply.glob("index-*.json"))
@@ -832,14 +1107,12 @@ def dispatch(args):
         manifest = plan(config, root, folder, validate=False)
         print(json.dumps({"project": str(root), "config": config, "plan": manifest}))
         return 0
-    if args.action in {"poll", "cancel"}:
-        if not args.output_dir:
-            raise ValueError("Use --output-dir for the submitted experiment")
-        return job_action(folder, args.action)
     if args.action == "export":
         manifest = export(config, root, folder)
         emit("exported", folder=str(folder), total=manifest["total"])
         return 0
+    if args.action == "sync":
+        return synchronize(config, root, folder)
     if args.action == "submit":
         return submit(config, root, folder)
     return run(config, root, folder, args.action)
@@ -863,6 +1136,8 @@ def main(argv):
             "poll",
             "cancel",
             "log",
+            "sync",
+            "reconnect",
         ],
     )
     parser.add_argument("config")
@@ -871,15 +1146,36 @@ def main(argv):
     parser.add_argument("--output-dir")
     parser.add_argument("--run-id", type=int)
     parser.add_argument("--text")
-    return dispatch(parser.parse_args(argv))
+    previous = {
+        sig: signal.signal(sig, lambda *_: (_ for _ in ()).throw(Detached()))
+        for sig in (signal.SIGTERM, signal.SIGHUP)
+    }
+    try:
+        return dispatch(parser.parse_args(argv))
+    finally:
+        for sig, handler in previous.items():
+            signal.signal(sig, handler)
 
 
 if __name__ == "__main__":
     try:
         sys.exit(main(sys.argv[1:]))
+    except (Detached, ConnectionError) as error:
+        emit(
+            "disconnected",
+            message=str(error)
+            or "Observer detached; reconnect to inspect the saved job",
+        )
+        sys.exit(3)
     except KeyboardInterrupt:
         emit("canceled")
         sys.exit(130)
-    except (ValueError, OSError, subprocess.CalledProcessError, KeyError) as error:
+    except (
+        ValueError,
+        RuntimeError,
+        OSError,
+        subprocess.CalledProcessError,
+        KeyError,
+    ) as error:
         emit("error", message=str(error))
         sys.exit(2)

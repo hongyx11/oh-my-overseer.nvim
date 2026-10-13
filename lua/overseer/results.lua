@@ -394,6 +394,9 @@ function M.on_complete(task, status)
   local outcome = status == STATUS.SUCCESS and "succeeded" or status:lower()
   local message = status == STATUS.FAILURE and target.name .. " failed"
     or target.name .. " " .. outcome
+  if task.metadata.observer_detached then
+    message = "Disconnected from remote work; use A or OverseerReconnect to attach again"
+  end
   if target.exit_code and status == STATUS.FAILURE then
     message = message .. " (exit " .. target.exit_code .. ")"
   end

@@ -59,6 +59,29 @@
         "nodes": "${value}"
       },
       "reserved_id": "nodes"
+    },
+    "gpu_name": {
+      "label": "GPU name",
+      "choices": [
+        "L40S",
+        "H100"
+      ],
+      "presets": {
+        "L40S": [
+          "L40S"
+        ],
+        "H100": [
+          "H100"
+        ],
+        "all": [
+          "L40S",
+          "H100"
+        ]
+      },
+      "slurm": {
+        "gpu_name": "${value}"
+      },
+      "reserved_id": "gpu_name"
     }
   }
 }

@@ -25,6 +25,6 @@ XDG_CONFIG_HOME="$TEST_ROOT/config" \
   nvim --headless -u tests/minimal_init.lua \
   -c "PlenaryBustedDirectory ${1-tests} { minimal_init = './tests/minimal_init.lua' }"
 if [ "${1-tests}" = "tests" ]; then
-  python3 -m unittest discover -s tests -p experiment_runner_test.py
+  python3 -m unittest discover -s tests -p '*_test.py'
 fi
 echo "Success"

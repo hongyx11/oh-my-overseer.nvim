@@ -6,6 +6,15 @@ local template = require("overseer.template")
 local window = require("overseer.window")
 
 local M = {}
+M._source_sync = function()
+  require("overseer.experiment").sync()
+end
+M._reconnect = function()
+  require("overseer.experiment").reconnect()
+end
+M._experiment_cancel = function()
+  require("overseer.experiment").cancel()
+end
 M._experiment = function()
   require("overseer.experiment").toggle()
 end

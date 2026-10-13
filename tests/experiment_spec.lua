@@ -154,6 +154,27 @@ describe("experiment panel", function()
     vim.api.nvim_win_set_buf(source, source_buf)
     vim.cmd.only({ bang = true })
     vim.cmd.cd(cwd)
+    local cleanup = [[
+import json,pathlib,sys,time
+sys.path.insert(0,sys.argv[2])
+from omo_client import Connection
+root=pathlib.Path(sys.argv[1])
+jobs=list((root/".omo/jobs").glob("*/state.json"))
+if jobs:
+    with Connection({"kind":"local","project_dir":str(root)},pathlib.Path(sys.argv[2])/"omo_agent.py") as connection:
+        for file in jobs:
+            state=json.loads(file.read_text())
+            if not state["terminal"]:
+                connection.request("cancel",{"job":state["job"]})
+                deadline=time.monotonic()+5
+                while time.monotonic()<deadline:
+                    result=connection.request("observe",{"job":state["job"],"cursor":0})
+                    if result["state"]["terminal"]: break
+                    time.sleep(.02)
+]]
+    local scripts =
+      vim.fs.dirname(assert(vim.api.nvim_get_runtime_file("scripts/omo_agent.py", false)[1]))
+    system({ "python3", "-c", cleanup, root, scripts }, { text = true }):wait()
     vim.fn.delete(root, "rf")
     vim.notify = notify
     vim.system = system
@@ -250,6 +271,71 @@ describe("experiment panel", function()
     assert.are.equal("config", state.view)
     panel_key("q")
     assert.is_true(vim.api.nvim_win_is_valid(source))
+  end)
+
+  it("reconnects to the same job without rewriting its frozen launch", function()
+    panel_key("r")
+    assert.is_true(vim.wait(8000, function()
+      return state.task and state.task:is_complete()
+    end, 10))
+    local snapshot = state.task.metadata.experiment_config
+    local bytes = vim.fn.readfile(snapshot)
+    local folder = state.session_folder
+    local receipt = require("overseer.files").load_json_file(folder .. "/session.json")
+    local job = receipt.entries[1].job
+    state.config.parameters[3].selected = { "b" }
+    panel_key("w")
+    panel_key("A")
+    assert.is_true(vim.wait(8000, function()
+      return state.task and state.task:is_complete()
+    end, 10))
+    assert.are.equal(overseer.STATUS.SUCCESS, state.task.status)
+    assert.are.same(bytes, vim.fn.readfile(snapshot))
+    assert.are.equal(
+      job,
+      require("overseer.files").load_json_file(folder .. "/session.json").entries[1].job
+    )
+    assert.are.equal(2, state.completed)
+  end)
+
+  it("treats observer disconnection separately from remote cancellation", function()
+    local gate = root .. "/detach-release"
+    local script = root .. "/detach-build.sh"
+    vim.fn.writefile({
+      "#!/usr/bin/env bash",
+      "echo REMOTE-ACTIVE",
+      'while [ ! -e "$1" ]; do sleep .02; done',
+      "echo REMOTE-DONE",
+    }, script)
+    state.config.build.commands = { { "bash", script, gate } }
+    panel_key("w")
+    panel_key("C")
+    assert.is_true(vim.wait(5000, function()
+      return table.concat(state.logs, "\n"):find("REMOTE%-ACTIVE") ~= nil
+    end, 10))
+    local folder = state.session_folder
+    local receipt = require("overseer.files").load_json_file(folder .. "/session.json")
+    local job = receipt.entries[1].job
+    local pid = state.task.strategy.job_id
+    assert.is_truthy(pid)
+    vim.uv.kill(vim.fn.jobpid(pid), 15)
+    assert.is_true(vim.wait(8000, function()
+      return state.task:is_complete()
+    end, 10))
+    assert.are.equal(overseer.STATUS.CANCELED, state.task.status)
+    assert.is_true(state.disconnected)
+    assert.is_truthy(state.status:find("DISCONNECTED", 1, true))
+    vim.fn.writefile({}, gate)
+    panel_key("A")
+    assert.is_true(vim.wait(8000, function()
+      return state.task:is_complete()
+    end, 10))
+    assert.are.equal(overseer.STATUS.SUCCESS, state.task.status)
+    assert.are.equal(
+      job,
+      require("overseer.files").load_json_file(folder .. "/session.json").entries[1].job
+    )
+    assert.is_truthy(table.concat(state.logs, "\n"):find("REMOTE%-DONE"))
   end)
 
   it("captures immutable launch configuration and exports a portable bundle", function()
@@ -669,6 +755,28 @@ describe("experiment panel", function()
     assert.are.same({ 2 }, state.resolved.parameters[4].selected)
   end)
 
+  it("accepts a remote executable path without requiring a local executable", function()
+    state.config.servers = {
+      choices = {
+        { id = "remote", kind = "ssh", host = "unused", project_dir = "/remote/project" },
+      },
+      selected = { "remote" },
+    }
+    panel_key("w")
+    dialogs({ "build/bin/remote-only-program" }, {})
+    panel_key("b")
+    assert.are.equal("build/bin/remote-only-program", state.config.binary)
+  end)
+
+  it("adds GPU name as a reusable reserved Slurm option", function()
+    dialogs({}, { "GPU name", "L40S" })
+    panel_key("a")
+    assert.are.equal("gpu_name", state.config.parameters[4].id)
+    assert.are.equal("gpu_name", state.config.parameters[4].template)
+    assert.are.same({ "L40S" }, state.resolved.parameters[4].selected)
+    assert.are.same({ gpu_name = "${value}" }, state.resolved.parameters[4].slurm)
+  end)
+
   it("saves a shared selection preset without replacing experiment-specific bindings", function()
     state.config.parameters[2] =
       { id = "threads", template = "threads", args = {}, selected = { 1, 4 } }
@@ -718,13 +826,13 @@ describe("experiment panel", function()
     store.write(file, value)
     assert.are.same(value, store.read(file))
     store.activate(root, state.file)
-    store.record_jobs(root, state.file, root .. "/submitted")
+    store.record_session(root, state.file, root .. "/submitted", "submit")
     assert.are.equal(state.file, store.active(root))
-    assert.are.equal(root .. "/submitted", store.session(root, state.file).jobs_folder)
+    assert.are.equal(root .. "/submitted", store.session(root, state.file).folder)
     local another = store.create(root, "Another", state.config)
-    store.record_jobs(root, state.file, root .. "/more-jobs")
+    store.record_session(root, state.file, root .. "/more-jobs", "submit")
     assert.are.equal(another, store.active(root))
-    assert.are.equal(root .. "/more-jobs", store.session(root, state.file).jobs_folder)
+    assert.are.equal(root .. "/more-jobs", store.session(root, state.file).folder)
     store.activate(root, state.file)
   end)
   it("edits program arguments with quoting and preserves placeholders", function()

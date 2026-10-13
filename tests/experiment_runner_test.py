@@ -2,15 +2,18 @@ import importlib.util
 import json
 import os
 import signal
+import shlex
 import time
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import shutil
 import unittest
 from unittest.mock import patch
 
 MODULE_PATH = Path(__file__).resolve().parents[1] / "scripts/overseer_experiment.py"
+sys.path.insert(0, str(MODULE_PATH.parent))
 spec = importlib.util.spec_from_file_location("experiment_runner", MODULE_PATH)
 runner = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(runner)
@@ -74,11 +77,46 @@ class ExperimentRunnerTests(unittest.TestCase):
             "output_dir": "results",
             "stop_on_failure": False,
         }
+        self.scheduler = self.root / "scheduler"
+        self.scheduler.mkdir()
+        fixture = Path(__file__).with_name("fake_slurm.py")
+        for name in ("sbatch", "squeue", "sacct", "scancel", "salloc", "srun"):
+            path = self.scheduler / name
+            shutil.copyfile(fixture, path)
+            path.chmod(0o755)
+        self.config["servers"]["choices"][0]["setup"] = [
+            "export PATH=" + shlex.quote(str(self.scheduler)) + ":$PATH",
+            "export OMO_FAKE_SLURM=" + shlex.quote(str(self.scheduler / "state")),
+        ]
         self.file = self.root / "experiment.json"
         runner.write(self.file, self.config)
 
     def tearDown(self):
+        jobs = list((self.root / ".omo/jobs").glob("*/state.json"))
+        if any(not runner.read(p)["terminal"] for p in jobs):
+            with runner.Connection(
+                {"kind": "local", "project_dir": str(self.root)},
+                MODULE_PATH.with_name("omo_agent.py"),
+            ) as connection:
+                for path in jobs:
+                    state = runner.read(path)
+                    if not state["terminal"]:
+                        connection.request("cancel", {"job": state["job"]})
+                        deadline = time.monotonic() + 5
+                        while time.monotonic() < deadline:
+                            value = connection.request(
+                                "observe", {"job": state["job"], "cursor": 0}
+                            )
+                            if value["state"]["terminal"]:
+                                break
+                            time.sleep(0.02)
         self.directory.cleanup()
+
+    def scheduler_calls(self):
+        return [
+            json.loads(v)
+            for v in (self.scheduler / "state/calls.jsonl").read_text().splitlines()
+        ]
 
     def cli(self, action, folder, module, file):
         return subprocess.run(
@@ -187,9 +225,11 @@ class ExperimentRunnerTests(unittest.TestCase):
                 ["bash", "-n"], input=script, text=True, capture_output=True
             ).returncode,
         )
-        argv = runner.ssh(profile, "echo test", tty=True)
-        self.assertEqual("cluster", argv[-2])
-        self.assertIn("-tt", argv)
+        from omo_client import ssh_arguments
+
+        argv = ssh_arguments(profile, self.root / "sockets")
+        self.assertEqual("cluster", argv[-1])
+        self.assertIn("-T", argv)
 
     def test_disabled_or_undersized_profiles_fail_before_execution(self):
         self.config["servers"]["choices"][0]["enabled"] = False
@@ -221,23 +261,16 @@ class ExperimentRunnerTests(unittest.TestCase):
             "time": "00:05:00",
         }
         folder = self.root / "submitted"
-        calls = []
-
-        def command(argv, **kwargs):
-            calls.append(argv)
-            if argv[0] == "sbatch":
-                self.assertIn("#SBATCH --cpus-per-task=4", kwargs["input"])
-                return subprocess.CompletedProcess(argv, 0, "12345\n", "")
-            return subprocess.CompletedProcess(
-                argv, 0, "RUNNING\n" if argv[0] == "squeue" else "", ""
-            )
-
-        with patch.object(runner.subprocess, "run", side_effect=command):
-            self.assertEqual(0, runner.submit(self.config, self.root, folder))
-            self.assertEqual(0, runner.job_action(folder, "poll"))
-            self.assertEqual(0, runner.job_action(folder, "cancel"))
-        self.assertEqual(["scancel", "12345"], calls[-1])
-        self.assertEqual("CANCELED", runner.read(folder / "jobs.json")[0]["status"])
+        self.assertEqual(0, runner.submit(self.config, self.root, folder))
+        self.assertEqual(0, runner.job_action(folder, "poll"))
+        self.assertEqual(0, runner.job_action(folder, "cancel"))
+        calls = self.scheduler_calls()
+        submitted = [c for c in calls if c["argv"][0] == "sbatch"]
+        self.assertIn("#SBATCH --cpus-per-task=4", submitted[0]["input"])
+        self.assertEqual(["scancel", "301"], calls[-1]["argv"])
+        self.assertEqual(
+            "301", runner.read(folder / "session.json")["entries"][0]["state"]["job_id"]
+        )
 
     def test_no_partial_submission_when_a_later_profile_has_no_slurm_config(self):
         self.config["servers"] = {
@@ -261,18 +294,11 @@ class ExperimentRunnerTests(unittest.TestCase):
         self.config["servers"]["choices"][0]["slurm"] = {"cpus_per_task": 4}
         folder = self.root / "allocated"
 
-        def simulate(argv, record, log):
-            for number in range(1, 28):
-                record({"event": "finish", "id": number, "exit_code": 0})
-            return 0
-
-        with patch.object(runner, "execute", side_effect=simulate) as execute:
-            self.assertEqual(0, runner.run(self.config, self.root, folder, "run"))
-        execute.assert_called_once()
-        argv = execute.call_args.args[0]
-        self.assertEqual("salloc", argv[0])
-        self.assertIn("--cpus-per-task=4", argv)
-        self.assertEqual(27, argv[-1].count('"event": "start"'))
+        self.assertEqual(0, runner.run(self.config, self.root, folder, "run"))
+        calls = [c for c in self.scheduler_calls() if c["argv"][0] == "salloc"]
+        self.assertEqual(1, len(calls))
+        self.assertIn("--cpus-per-task=4", calls[0]["argv"])
+        self.assertEqual(27, runner.read(folder / "results.json")["completed"])
 
     def test_setup_failure_prevents_running_binary(self):
         self.config["servers"]["choices"][0]["setup"] = ["false"]
@@ -310,7 +336,7 @@ class ExperimentRunnerTests(unittest.TestCase):
         self.assertIn("trial", result.stdout)
         self.assertTrue(result.stdout.rstrip().endswith("1 a"))
 
-    def test_stopping_runner_terminates_the_active_trial_process(self):
+    def test_interrupt_explicitly_cancels_the_owned_trial_process(self):
         self.binary.write_text(
             "#!/usr/bin/env python3\nimport os,pathlib,time\npathlib.Path('active.pid').write_text(str(os.getpid()))\ntime.sleep(30)\n"
         )
@@ -336,7 +362,7 @@ class ExperimentRunnerTests(unittest.TestCase):
                 time.sleep(0.02)
             self.assertTrue((self.root / "active.pid").exists())
             pid = int((self.root / "active.pid").read_text())
-            process.send_signal(signal.SIGTERM)
+            process.send_signal(signal.SIGINT)
             output, errors = process.communicate(timeout=8)
             self.assertEqual(130, process.returncode, output + errors)
             self.assertIn('"event": "canceled"', output)
@@ -468,16 +494,10 @@ class ExperimentRunnerTests(unittest.TestCase):
         self.assertEqual(
             [2, 4, 16], [int(a["slurm"]["nodes"]) for a in plan["allocations"]]
         )
-        submitted = []
-
-        def submit(argv, **kwargs):
-            submitted.append(kwargs["input"])
-            return subprocess.CompletedProcess(
-                argv, 0, str(300 + len(submitted)) + "\n", ""
-            )
-
-        with patch.object(runner.subprocess, "run", side_effect=submit):
-            self.assertEqual(0, runner.submit(config, self.root, folder))
+        self.assertEqual(0, runner.submit(config, self.root, folder))
+        submitted = [
+            c["input"] for c in self.scheduler_calls() if c["argv"][0] == "sbatch"
+        ]
         self.assertEqual(3, len(submitted))
         for nodes, text in zip([2, 4, 16], submitted):
             self.assertIn("#SBATCH --nodes=" + str(nodes), text)
@@ -489,9 +509,106 @@ class ExperimentRunnerTests(unittest.TestCase):
                     ["bash", "-n"], input=text, text=True, capture_output=True
                 ).returncode,
             )
-        jobs = runner.read(folder / "jobs.json")
+        jobs = runner.read(folder / "session.json")["entries"]
         self.assertEqual(3, len({j["allocation"] for j in jobs}))
-        self.assertEqual(["301", "302", "303"], [j["job_id"] for j in jobs])
+        self.assertEqual(["301", "302", "303"], [j["state"]["job_id"] for j in jobs])
+
+    def test_gpu_name_and_nodes_form_separate_typed_allocations(self):
+        self.config["parameters"] = [
+            {
+                "id": "gpu_name",
+                "choices": ["L40S", "H100"],
+                "selected": ["L40S", "H100"],
+                "slurm": {"gpu_name": "${value}"},
+            },
+            {
+                "id": "nodes",
+                "choices": [2, 4],
+                "selected": [2, 4],
+                "slurm": {"nodes": "${value}"},
+            },
+        ]
+        self.config["binary"], self.config["args"], self.config["environment"] = (
+            "/usr/bin/true",
+            [],
+            {},
+        )
+        self.config["servers"]["choices"][0]["slurm"] = {"account": "yuxilab"}
+        config = runner.resolve_config(self.config, {"options": {}})
+        manifest = runner.plan(config, self.root, self.root / "gpu-plan", True)
+        self.assertEqual(4, len(manifest["allocations"]))
+        self.assertEqual(
+            ["L40S:1", "L40S:1", "H100:1", "H100:1"],
+            [a["slurm"]["gpus_per_node"] for a in manifest["allocations"]],
+        )
+        for allocation in manifest["allocations"]:
+            text = runner.script(config, manifest, allocation, "run", True)
+            self.assertIn(
+                "#SBATCH --gpus-per-node=" + allocation["slurm"]["gpus_per_node"], text
+            )
+            self.assertNotIn("--gpu-name", text)
+        self.config["parameters"] = self.config["parameters"][:1]
+        self.config["servers"]["choices"][0]["slurm"]["gpus"] = 2
+        config = runner.resolve_config(self.config, {"options": {}})
+        manifest = runner.plan(config, self.root, self.root / "gpu-count", True)
+        self.assertEqual(
+            ["L40S:2", "H100:2"], [a["slurm"]["gpus"] for a in manifest["allocations"]]
+        )
+
+    def test_gpu_name_is_reserved_for_slurm_and_rejects_program_binding(self):
+        base = {
+            "id": "gpu_name",
+            "choices": ["L40S", "H100"],
+            "selected": ["L40S"],
+            "slurm": {"gpu_name": "${value}"},
+        }
+        for option in (
+            {**base, "id": "model"},
+            {**base, "args": ["--gpu", "${value}"]},
+            {**base, "choices": ["bad:model"], "selected": ["bad:model"]},
+        ):
+            with self.assertRaises(ValueError):
+                runner.resolve_config(
+                    {"version": 2, "parameters": [option]}, {"options": {}}
+                )
+        self.config["parameters"] = [base]
+        config = runner.resolve_config(self.config, {"options": {}})
+        with self.assertRaisesRegex(ValueError, "Slurm resources"):
+            runner.plan(config, self.root, self.root / "gpu-local", True)
+
+    def test_batch_policy_overrides_qos_without_changing_interactive_requests(self):
+        self.config["servers"]["choices"][0]["slurm"] = {
+            "account": "yuxilab",
+            "qos": "interactive",
+        }
+        self.config["servers"]["choices"][0]["slurm_batch"] = {"qos": "normal"}
+        manifest = runner.plan(self.config, self.root, self.root / "policies", True)
+        allocation = manifest["allocations"][0]
+        self.assertEqual("interactive", allocation["slurm"]["qos"])
+        self.assertEqual("normal", allocation["batch_resources"]["qos"])
+        self.assertIn(
+            "#SBATCH --qos=normal",
+            runner.script(self.config, manifest, allocation, "run", True),
+        )
+
+    def test_reconnect_preserves_job_identity_and_the_frozen_launch(self):
+        folder = self.root / "restored"
+        self.config["parameters"][1]["selected"] = [1]
+        self.config["parameters"][0]["selected"] = ["d1"]
+        self.config["parameters"][2]["selected"] = ["a"]
+        runner.write(self.file, self.config)
+        self.assertEqual(0, self.cli("run", folder, MODULE_PATH, self.file).returncode)
+        original = runner.read(folder / "session.json")["entries"][0]["job"]
+        launch = (folder / "launch.json").read_bytes()
+        self.config["parameters"][2]["selected"] = ["c"]
+        runner.write(self.file, self.config)
+        result = self.cli("reconnect", folder, MODULE_PATH, self.file)
+        self.assertEqual(0, result.returncode, result.stdout + result.stderr)
+        self.assertEqual(
+            original, runner.read(folder / "session.json")["entries"][0]["job"]
+        )
+        self.assertEqual(launch, (folder / "launch.json").read_bytes())
+        self.assertEqual(2, self.cli("run", folder, MODULE_PATH, self.file).returncode)
 
     def test_reserved_nodes_reject_wrong_names_bindings_and_nonpositive_values(self):
         library = {
@@ -570,24 +687,18 @@ class ExperimentRunnerTests(unittest.TestCase):
         self.config["binary"] = "/usr/bin/true"
         self.config["servers"]["choices"][0]["slurm"] = {}
 
-        def failed(argv, record, log):
-            record({"event": "finish", "id": 1, "exit_code": 7})
-            return 0
-
-        with patch.object(runner, "execute", side_effect=failed):
-            self.assertEqual(
-                1,
-                runner.run(
-                    self.config, self.root, self.root / "scheduler-failed", "run"
-                ),
-            )
-        with patch.object(runner, "execute", return_value=0):
-            self.assertEqual(
-                1,
-                runner.run(
-                    self.config, self.root, self.root / "scheduler-empty", "run"
-                ),
-            )
+        with runner.ExecutionSession(self.root / "scheduler-failed") as session:
+            session.prepare(self.config, self.root, "run")
+            entry = session.data["entries"][0]
+            entry["request"]["launcher"] = []
+            entry["request"]["script"] = runner.marker_line("finish", id=1, exit_code=7)
+            self.assertEqual(1, session.execute(False))
+        with runner.ExecutionSession(self.root / "scheduler-empty") as session:
+            session.prepare(self.config, self.root, "run")
+            entry = session.data["entries"][0]
+            entry["request"]["launcher"] = []
+            entry["request"]["script"] = "true"
+            self.assertEqual(1, session.execute(False))
 
     def test_local_export_reserves_the_full_cpu_requirement_for_manual_batch_use(self):
         manifest = runner.plan(self.config, self.root, self.root / "batch", True)

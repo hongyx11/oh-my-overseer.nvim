@@ -151,14 +151,20 @@ function M.activate(project, file)
 end
 
 function M.session(project, file)
-  return (metadata(project).experiments or {})[relative(project, file)] or {}
+  local value = (metadata(project).experiments or {})[relative(project, file)] or {}
+  if value.folder then
+    value.folder = absolute(project, value.folder)
+  end
+  return value
 end
 
-function M.record_jobs(project, file, folder)
+function M.record_session(project, file, folder, mode)
   local data = metadata(project)
   data.experiments = data.experiments or vim.empty_dict()
   local key = relative(project, file)
-  data.experiments[key] = { jobs_folder = folder }
+  data.experiments[key] = data.experiments[key] or vim.empty_dict()
+  data.experiments[key].folder = relative(project, folder)
+  data.experiments[key].mode = mode
   M.write(project .. "/.overseer/state.json", data)
 end
 

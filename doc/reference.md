@@ -54,6 +54,7 @@
   - [on_complete_dispose](components.md#on_complete_dispose)
   - [on_complete_notify](components.md#on_complete_notify)
   - [on_complete_restart](components.md#on_complete_restart)
+  - [on_exit_set_observer_status](components.md#on_exit_set_observer_status)
   - [on_exit_set_status](components.md#on_exit_set_status)
   - [on_output_notify](components.md#on_output_notify)
   - [on_output_parse](components.md#on_output_parse)
@@ -228,20 +229,23 @@ require("overseer").setup({
 
 ## Commands
 
-| Command                  | Args                | Description                                                                           |
-| ------------------------ | ------------------- | ------------------------------------------------------------------------------------- |
-| `OverseerExperiment`     |                     | Toggle the experiment configuration and progress panel                                |
-| `OverseerExperimentInit` |                     | Create an editable experiment configuration                                           |
-| `OverseerExperimentRun`  |                     | Run the selected experiment combinations sequentially                                 |
-| `OverseerResults`        |                     | Toggle the latest task results                                                        |
-| `OverseerHistory`        |                     | Browse recent workflow output                                                         |
-| `OverseerCMakePreset`    |                     | Select this project's CMake configure preset                                          |
-| `OverseerOpen[!]`        | `left/right/bottom` | Open the overseer window. With `!` cursor stays in current window                     |
-| `OverseerClose`          |                     | Close the overseer window                                                             |
-| `OverseerToggle[!]`      | `left/right/bottom` | Toggle the overseer window. With `!` cursor stays in current window                   |
-| `OverseerRun`            | `[name/tags]`       | Run a task from a template                                                            |
-| `OverseerShell[!]`       | `[command]`         | Run a shell command as an overseer task. With `!` the task is created but not started |
-| `OverseerTaskAction`     |                     | Select a task to run an action on                                                     |
+| Command                    | Args                | Description                                                                           |
+| -------------------------- | ------------------- | ------------------------------------------------------------------------------------- |
+| `OverseerSync`             |                     | Publish a captured source revision to selected remote hosts                           |
+| `OverseerReconnect`        |                     | Reconnect to the experiment's saved execution session                                 |
+| `OverseerExperimentCancel` |                     | Cancel the experiment's owned process or Slurm jobs                                   |
+| `OverseerExperiment`       |                     | Toggle the experiment configuration and progress panel                                |
+| `OverseerExperimentInit`   |                     | Create an editable experiment configuration                                           |
+| `OverseerExperimentRun`    |                     | Run the selected experiment combinations sequentially                                 |
+| `OverseerResults`          |                     | Toggle the latest task results                                                        |
+| `OverseerHistory`          |                     | Browse recent workflow output                                                         |
+| `OverseerCMakePreset`      |                     | Select this project's CMake configure preset                                          |
+| `OverseerOpen[!]`          | `left/right/bottom` | Open the overseer window. With `!` cursor stays in current window                     |
+| `OverseerClose`            |                     | Close the overseer window                                                             |
+| `OverseerToggle[!]`        | `left/right/bottom` | Toggle the overseer window. With `!` cursor stays in current window                   |
+| `OverseerRun`              | `[name/tags]`       | Run a task from a template                                                            |
+| `OverseerShell[!]`         | `[command]`         | Run a shell command as an overseer task. With `!` the task is created but not started |
+| `OverseerTaskAction`       |                     | Select a task to run an action on                                                     |
 
 ## Highlight groups
 
@@ -853,6 +857,7 @@ Returns:
 - [on_complete_dispose](components.md#on_complete_dispose)
 - [on_complete_notify](components.md#on_complete_notify)
 - [on_complete_restart](components.md#on_complete_restart)
+- [on_exit_set_observer_status](components.md#on_exit_set_observer_status)
 - [on_exit_set_status](components.md#on_exit_set_status)
 - [on_output_notify](components.md#on_output_notify)
 - [on_output_parse](components.md#on_output_parse)
