@@ -124,7 +124,7 @@ require("overseer").setup({
       ["<CR>"] = "keymap.run_action",
       ["dd"] = { "keymap.run_action", opts = { action = "dispose" }, desc = "Dispose task" },
       ["<C-e>"] = { "keymap.run_action", opts = { action = "edit" }, desc = "Edit task" },
-      ["o"] = "keymap.open",
+      ["o"] = { "keymap.open", opts = { dir = "vsplit" }, desc = "Open task output in vsplit" },
       ["<C-v>"] = { "keymap.open", opts = { dir = "vsplit" }, desc = "Open task output in vsplit" },
       ["<C-s>"] = { "keymap.open", opts = { dir = "split" }, desc = "Open task output in split" },
       ["<C-t>"] = { "keymap.open", opts = { dir = "tab" }, desc = "Open task output in tab" },
