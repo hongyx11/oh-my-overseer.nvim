@@ -10,6 +10,7 @@ local choose_experiment
 local new_experiment
 local modify_row
 local command
+local render
 
 local function display_text(value)
   return tostring(value):gsub("\r", "\\r"):gsub("\n", "\\n")
@@ -78,6 +79,7 @@ vim.api.nvim_create_autocmd("VimResized", {
     for _, panel in pairs(panels) do
       if vim.api.nvim_win_is_valid(panel.win) then
         vim.api.nvim_win_set_config(panel.win, panel_config(panel.state))
+        render(panel.state)
       end
     end
   end,
@@ -181,7 +183,48 @@ local function status_highlight(value)
   return "OverseerExperimentInfo"
 end
 
-local function render(state)
+local function footer_cell(control, width)
+  if not control then
+    return {}
+  end
+  local rows = {}
+  local inline = width >= 52
+  local prefix = inline and string.format("%-12s ", control[1]) or "  "
+  local available = math.max(1, width - #prefix)
+  if not inline then
+    for first = 1, #control[1], width do
+      table.insert(rows, { text = control[1]:sub(first, first + width - 1), label = true })
+    end
+  end
+  local current = ""
+  local function append(item, separator)
+    local joined = current == "" and item or current .. separator .. item
+    if vim.fn.strdisplaywidth(joined) > available and current ~= "" then
+      table.insert(rows, { text = prefix .. current, label = inline and #rows == 0 })
+      prefix = inline and string.rep(" ", 13) or "  "
+      current = item
+    else
+      current = joined
+    end
+  end
+  for _, item in ipairs(vim.split(control[2], " · ", { plain = true })) do
+    if vim.fn.strdisplaywidth(item) <= available then
+      append(item, " · ")
+    else
+      for word in item:gmatch("%S+") do
+        for first = 1, #word, available do
+          append(word:sub(first, first + available - 1), " ")
+        end
+      end
+    end
+  end
+  if current ~= "" then
+    table.insert(rows, { text = prefix .. current, label = inline and #rows == 0 })
+  end
+  return rows
+end
+
+render = function(state)
   if not state.buf or not vim.api.nvim_buf_is_valid(state.buf) then
     return
   end
@@ -359,8 +402,31 @@ local function render(state)
     { "View", "1 config · 2 runs · 3 logs · Esc/q close" },
   }
   vim.list_extend(lines, { "", "CONTROLS" })
-  for _, control in ipairs(controls) do
-    table.insert(lines, string.format("%-12s %s", control[1], control[2]))
+  local footer_marks = {}
+  local gap = 3
+  local width = math.max(1, math.floor((panel_config(state).width - gap) / 2))
+  local middle = math.ceil(#controls / 2)
+  for index = 1, middle do
+    local left = footer_cell(controls[index], width)
+    local right = footer_cell(controls[index + middle], width)
+    for row = 1, math.max(#left, #right) do
+      local first, second = left[row] or { text = "" }, right[row] or { text = "" }
+      local padding = string.rep(" ", math.max(0, width - vim.fn.strdisplaywidth(first.text)) + gap)
+      table.insert(lines, first.text .. padding .. second.text)
+      if first.label then
+        table.insert(
+          footer_marks,
+          { row = #lines - 1, first = 0, last = math.min(12, #first.text) }
+        )
+      end
+      if second.label then
+        local start = #first.text + #padding
+        table.insert(
+          footer_marks,
+          { row = #lines - 1, first = start, last = start + math.min(12, #second.text) }
+        )
+      end
+    end
   end
   lines = vim.tbl_map(display_text, lines)
   local follow_requested = state.follow_logs
@@ -535,8 +601,8 @@ local function render(state)
     end
   end
   highlight(footer_start + 1, "OverseerExperimentMuted")
-  for index in ipairs(controls) do
-    span(footer_start + 1 + index, "OverseerExperimentLabel", 0, 12)
+  for _, mark in ipairs(footer_marks) do
+    span(mark.row, "OverseerExperimentLabel", mark.first, mark.last)
   end
 end
 

@@ -815,4 +815,30 @@ describe("experiment panel", function()
     assert.are.equal("OverseerExperimentWarning", highlights[state.logs[2]])
     assert.are.equal("OverseerExperimentSuccess", highlights[state.logs[3]])
   end)
+  it("lays out grouped footer hints in two columns and reflows them on resize", function()
+    local original = vim.o.columns
+    for _, columns in ipairs({ 160, 80 }) do
+      vim.o.columns = columns
+      vim.api.nvim_exec_autocmds("VimResized", {})
+      local lines = vim.api.nvim_buf_get_lines(state.buf, 0, -1, false)
+      local footer
+      for row, line in ipairs(lines) do
+        if line == "CONTROLS" then
+          footer = row
+        end
+      end
+      assert.is_not_nil(footer)
+      assert.is_truthy(lines[footer + 1]:find("Experiments", 1, true))
+      assert.is_truthy(lines[footer + 1]:find("Files", 1, true))
+      for row = footer + 1, #lines do
+        assert.is_true(vim.fn.strdisplaywidth(lines[row]) <= vim.api.nvim_win_get_width(state.win))
+      end
+      local text = table.concat(lines, "\n", footer + 1)
+      for _, hint in ipairs({ "Enter/m edit row", "Esc/q close", "E export", "X cancel", "x stop" }) do
+        assert.is_truthy(text:find(hint, 1, true))
+      end
+    end
+    vim.o.columns = original
+    vim.api.nvim_exec_autocmds("VimResized", {})
+  end)
 end)
