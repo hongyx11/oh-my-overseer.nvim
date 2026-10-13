@@ -7,6 +7,9 @@ local function absolute(path, root)
 end
 
 function M.root()
+  if vim.b.overseer_project then
+    return vim.fs.root(vim.b.overseer_project, { "CMakePresets.json", "CMakeUserPresets.json" })
+  end
   local root = vim.fs.root(vim.fn.getcwd(), { "CMakePresets.json", "CMakeUserPresets.json" })
   if not root and vim.bo.buftype == "" and vim.api.nvim_buf_get_name(0) ~= "" then
     root =

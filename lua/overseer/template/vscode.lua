@@ -30,6 +30,13 @@ return {
     end
     local ret = {}
     local precalculated_vars = variables.precalculate_vars()
+    local config = require("overseer.config")
+    if config.results.enabled or config.cmake.enabled then
+      -- Tasks discovered from a source file can belong to a different project than cwd.
+      precalculated_vars.workspaceFolder = vim.fs.dirname(vim.fs.dirname(tasks_file))
+      precalculated_vars.workspaceFolderBasename =
+        vim.fs.basename(precalculated_vars.workspaceFolder)
+    end
 
     if content.tasks == nil then
       return "No 'tasks' key found in '.vscode/tasks.json'"

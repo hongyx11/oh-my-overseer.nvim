@@ -237,4 +237,23 @@ describe("CMake preset selection", function()
       assert.are.equal(source_buf, vim.api.nvim_win_get_buf(source))
     end
   )
+  it("uses the task file's project when the editor cwd is outside the project", function()
+    choose("blue")
+    vim.cmd.cd(vim.fs.dirname(root))
+    vim.cmd.edit(root .. "/main.c")
+    assert.are.equal(root, require("overseer.results").context_project())
+    local task
+    overseer.run_task(
+      { name = "Configure", autostart = false, search_params = { dir = root } },
+      function(value)
+        task = value
+      end
+    )
+    assert.is_true(vim.wait(5000, function()
+      return task ~= nil
+    end, 10))
+    table.insert(created, task)
+    assert.are.equal(root, task.cwd)
+    assert.are.equal("blue", task.cmd[3])
+  end)
 end)

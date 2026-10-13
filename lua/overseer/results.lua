@@ -9,13 +9,19 @@ local windows = {}
 local line_counts = {}
 
 local function context_project()
-  local file = vim.api.nvim_buf_get_name(0)
-  local root = vim.fs.root(vim.fn.getcwd(), { ".vscode", "CMakePresets.json", ".git" })
-  if not root and vim.bo.buftype == "" and file ~= "" then
-    root = vim.fs.root(file, { ".vscode", "CMakePresets.json", ".git" })
+  if vim.b.overseer_project then
+    return vim.b.overseer_project
   end
+  local file = vim.api.nvim_buf_get_name(0)
+  local root = vim.fs.root(vim.fn.getcwd(), { ".vscode", "CMakePresets.json" })
+  if not root and vim.bo.buftype == "" and file ~= "" then
+    root = vim.fs.root(file, { ".vscode", "CMakePresets.json" })
+  end
+  root = root or vim.fs.root(vim.fn.getcwd(), { ".git" })
   return vim.fs.normalize(root or vim.fn.getcwd())
 end
+
+M.context_project = context_project
 
 local function project(task)
   return vim.fs.normalize(
@@ -52,6 +58,7 @@ local function snapshot(task)
     name = task.name,
     status = task.status,
     exit_code = task.exit_code,
+    project = project(task),
     lines = task.metadata.start_error and {
       "Could not start " .. task.name,
       task.metadata.start_error,
@@ -67,7 +74,8 @@ local function output_window()
   end
 end
 
-local function display(buf, name, status, focus)
+local function display(buf, name, status, focus, key)
+  vim.b[buf].overseer_project = key
   if vim.api.nvim_win_get_config(0).relative ~= "" then
     for _, candidate in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
       if vim.api.nvim_win_get_config(candidate).relative == "" then
@@ -136,7 +144,7 @@ function M.show(task, focus)
   if record then
     record.viewed = true
   end
-  display(buf, task.name, task.status, focus)
+  display(buf, task.name, task.status, focus, project(task))
 end
 
 local function show_automatically(task, focus, record)
@@ -182,7 +190,7 @@ local function show_saved(entry)
     vim.bo[entry.buf].modifiable = false
     vim.bo[entry.buf].filetype = "OverseerOutput"
   end
-  display(entry.buf, entry.name, entry.status, true)
+  display(entry.buf, entry.name, entry.status, true, entry.project)
 end
 
 function M.toggle()
