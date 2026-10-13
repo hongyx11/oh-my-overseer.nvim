@@ -217,6 +217,39 @@ OverseerCANCELED                                             *hl-OverseerCANCELE
 OverseerFAILURE                                               *hl-OverseerFAILURE*
     Failed tasks
 
+OverseerExperimentSection                           *hl-OverseerExperimentSection*
+    Experiment section headings
+
+OverseerExperimentLabel                               *hl-OverseerExperimentLabel*
+    Editable experiment labels
+
+OverseerExperimentValue                               *hl-OverseerExperimentValue*
+    Selected experiment values
+
+OverseerExperimentNumber                             *hl-OverseerExperimentNumber*
+    Experiment counts and numeric values
+
+OverseerExperimentPath                                 *hl-OverseerExperimentPath*
+    Experiment paths and targets
+
+OverseerExperimentMuted                               *hl-OverseerExperimentMuted*
+    Hints and inactive settings
+
+OverseerExperimentActive                             *hl-OverseerExperimentActive*
+    Active experiment view
+
+OverseerExperimentSuccess                           *hl-OverseerExperimentSuccess*
+    Successful operations and selected hosts
+
+OverseerExperimentWarning                           *hl-OverseerExperimentWarning*
+    Warnings and settings needing attention
+
+OverseerExperimentError                               *hl-OverseerExperimentError*
+    Failed operations and error output
+
+OverseerExperimentInfo                                 *hl-OverseerExperimentInfo*
+    Running operations and live output
+
 OverseerTask                                                     *hl-OverseerTask*
     Used to render the name of a task or template
 

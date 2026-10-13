@@ -517,6 +517,45 @@ M.get_all_highlights = function()
     { name = "OverseerCANCELED", default = "DiagnosticWarn", desc = "Canceled tasks" },
     { name = "OverseerFAILURE", default = "DiagnosticError", desc = "Failed tasks" },
     { name = "OverseerDISPOSED", default = "Comment" },
+    { name = "OverseerExperimentSection", default = "Title", desc = "Experiment section headings" },
+    {
+      name = "OverseerExperimentLabel",
+      default = "Identifier",
+      desc = "Editable experiment labels",
+    },
+    { name = "OverseerExperimentValue", default = "String", desc = "Selected experiment values" },
+    {
+      name = "OverseerExperimentNumber",
+      default = "Number",
+      desc = "Experiment counts and numeric values",
+    },
+    {
+      name = "OverseerExperimentPath",
+      default = "Directory",
+      desc = "Experiment paths and targets",
+    },
+    { name = "OverseerExperimentMuted", default = "Comment", desc = "Hints and inactive settings" },
+    { name = "OverseerExperimentActive", default = "PmenuSel", desc = "Active experiment view" },
+    {
+      name = "OverseerExperimentSuccess",
+      default = "DiagnosticOk",
+      desc = "Successful operations and selected hosts",
+    },
+    {
+      name = "OverseerExperimentWarning",
+      default = "DiagnosticWarn",
+      desc = "Warnings and settings needing attention",
+    },
+    {
+      name = "OverseerExperimentError",
+      default = "DiagnosticError",
+      desc = "Failed operations and error output",
+    },
+    {
+      name = "OverseerExperimentInfo",
+      default = "DiagnosticInfo",
+      desc = "Running operations and live output",
+    },
     {
       name = "OverseerTask",
       default = "Title",

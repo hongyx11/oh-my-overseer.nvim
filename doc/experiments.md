@@ -61,6 +61,12 @@ SpCraft's real `bench_ompspmv` CLI: two coordinate matrices under `dataset/outpu
 threads 1/2/4, and float/double variants via `--precision`. Copy it into SpCraft's
 `.overseer/experiment.json`. There is no assumed algorithm `--method` flag.
 
+Labels, selected values, paths, and numbers use theme-aware highlights. Option
+rows show how many available choices are selected. Success, warning, and failure
+colors distinguish run status and important configure/build log messages. The
+`OverseerExperiment*` highlight groups can be customized independently of other
+editor floats.
+
 ## Controls
 
 | Key | Action |

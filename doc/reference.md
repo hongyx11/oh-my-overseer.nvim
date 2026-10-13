@@ -247,18 +247,29 @@ require("overseer").setup({
 
 Overseer defines the following highlights. Override them to customize the colors.
 
-| Group                | Description                                             |
-| -------------------- | ------------------------------------------------------- |
-| `OverseerPENDING`    | Pending tasks                                           |
-| `OverseerRUNNING`    | Running tasks                                           |
-| `OverseerSUCCESS`    | Succeeded tasks                                         |
-| `OverseerCANCELED`   | Canceled tasks                                          |
-| `OverseerFAILURE`    | Failed tasks                                            |
-| `OverseerTask`       | Used to render the name of a task or template           |
-| `OverseerTaskBorder` | The separator in the task list                          |
-| `OverseerOutput`     | The output summary in the task list                     |
-| `OverseerComponent`  | The name of a component in the task list or task editor |
-| `OverseerField`      | The name of a field in the task or template editor      |
+| Group                       | Description                                             |
+| --------------------------- | ------------------------------------------------------- |
+| `OverseerPENDING`           | Pending tasks                                           |
+| `OverseerRUNNING`           | Running tasks                                           |
+| `OverseerSUCCESS`           | Succeeded tasks                                         |
+| `OverseerCANCELED`          | Canceled tasks                                          |
+| `OverseerFAILURE`           | Failed tasks                                            |
+| `OverseerExperimentSection` | Experiment section headings                             |
+| `OverseerExperimentLabel`   | Editable experiment labels                              |
+| `OverseerExperimentValue`   | Selected experiment values                              |
+| `OverseerExperimentNumber`  | Experiment counts and numeric values                    |
+| `OverseerExperimentPath`    | Experiment paths and targets                            |
+| `OverseerExperimentMuted`   | Hints and inactive settings                             |
+| `OverseerExperimentActive`  | Active experiment view                                  |
+| `OverseerExperimentSuccess` | Successful operations and selected hosts                |
+| `OverseerExperimentWarning` | Warnings and settings needing attention                 |
+| `OverseerExperimentError`   | Failed operations and error output                      |
+| `OverseerExperimentInfo`    | Running operations and live output                      |
+| `OverseerTask`              | Used to render the name of a task or template           |
+| `OverseerTaskBorder`        | The separator in the task list                          |
+| `OverseerOutput`            | The output summary in the task list                     |
+| `OverseerComponent`         | The name of a component in the task list or task editor |
+| `OverseerField`             | The name of a field in the task or template editor      |
 
 ## Lua API
 

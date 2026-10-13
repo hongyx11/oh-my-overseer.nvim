@@ -162,11 +162,31 @@ local function count(config)
   return total
 end
 
+local function status_highlight(value)
+  value = value:upper()
+  if value:find("FAIL") or value:find("ERROR") then
+    return "OverseerExperimentError"
+  elseif value:find("CANCEL") or value:find("SKIP") then
+    return "OverseerExperimentWarning"
+  elseif
+    value:find("SUCCESS")
+    or value:find("COMPLETED")
+    or value:find("SAVED")
+    or value:find("EXPORTED")
+  then
+    return "OverseerExperimentSuccess"
+  elseif value == "PENDING" then
+    return "OverseerExperimentMuted"
+  end
+  return "OverseerExperimentInfo"
+end
+
 local function render(state)
   if not state.buf or not vim.api.nvim_buf_is_valid(state.buf) then
     return
   end
   local config = state.resolved or state.config
+  local job_rows = {}
   state.run_rows, state.rows = {}, {}
   local lines = {
     "EXPERIMENT · " .. (config.name or "Untitled"),
@@ -212,7 +232,12 @@ local function render(state)
     table.insert(lines, "")
     table.insert(lines, "OPTIONS · Enter / m modifies the highlighted row")
     for index, option in ipairs(config.parameters or {}) do
-      local suffix = option.preset and "  [preset: " .. option.preset .. "]" or ""
+      local suffix = "  ["
+        .. #option.selected
+        .. "/"
+        .. #option.choices
+        .. " selected]"
+        .. (option.preset and "  [preset: " .. option.preset .. "]" or "")
       row(
         (option.label or option.id) .. " (${" .. option.id .. "}): " .. labels(option) .. suffix,
         { kind = "parameter", index = index, id = option.id }
@@ -305,6 +330,7 @@ local function render(state)
           .. " · "
           .. (job.status or "SUBMITTED")
       )
+      job_rows[#lines] = job.status or "SUBMITTED"
     end
   else
     if not state.inspected_log then
@@ -371,21 +397,146 @@ local function render(state)
     end
   end
   vim.api.nvim_buf_clear_namespace(state.buf, state.ns, 0, -1)
-  local function highlight(row, group)
-    vim.api.nvim_buf_set_extmark(state.buf, state.ns, row, 0, {
-      end_col = #lines[row + 1],
+  local function span(row, group, first, last)
+    if last <= first then
+      return
+    end
+    vim.api.nvim_buf_set_extmark(state.buf, state.ns, row, first, {
+      end_col = last,
       hl_group = group,
     })
   end
-  highlight(0, "Title")
-  highlight(1, "Special")
-  highlight(3, state.status:find("FAIL") and "DiagnosticError" or "DiagnosticInfo")
-  highlight(footer_start + 1, "Comment")
+  local function highlight(row, group)
+    span(row, group, 0, #lines[row + 1])
+  end
+  local function match(row, text, group)
+    local first, last = lines[row + 1]:find(text, 1, true)
+    if first then
+      span(row, group, first - 1, last)
+    end
+  end
+  local function numbers(row)
+    for first, _, last in lines[row + 1]:gmatch("()(%d+)()") do
+      span(row, "OverseerExperimentNumber", first - 1, last - 1)
+    end
+  end
+  highlight(0, "OverseerExperimentSection")
+  highlight(1, "OverseerExperimentMuted")
+  local tab = ({ config = "[1 Config]", runs = "[2 Runs]", logs = "[3 Logs]" })[state.view]
+  match(1, tab, "OverseerExperimentActive")
+  span(3, "OverseerExperimentLabel", 0, 7)
+  span(3, status_highlight(state.status), 8, #lines[4])
+  numbers(4)
+  match(4, "Progress:", "OverseerExperimentLabel")
+  match(4, "failures:", "OverseerExperimentLabel")
+  local failure = lines[5]:find("failures: ", 1, true)
+  if failure then
+    span(
+      4,
+      (state.failed or 0) == 0 and "OverseerExperimentSuccess" or "OverseerExperimentError",
+      failure + 9,
+      #lines[5]
+    )
+  end
+  for number, editor in pairs(state.rows) do
+    local row, text = number - 1, lines[number]
+    local delimiter
+    if editor.kind == "parameter" then
+      local token = "(${" .. editor.id .. "})"
+      local first, last = text:find(token, 1, true)
+      delimiter = last + 1
+      span(row, "OverseerExperimentLabel", 0, first - 1)
+      span(row, "OverseerExperimentMuted", first - 1, last)
+    else
+      delimiter = text:find(":", 1, true)
+      span(row, "OverseerExperimentLabel", 0, delimiter - 1)
+    end
+    local first = text:find("%S", delimiter + 1)
+    local group = (editor.kind == "binary" or editor.kind == "target") and "OverseerExperimentPath"
+      or "OverseerExperimentValue"
+    if first then
+      span(row, group, first - 1, #text)
+    end
+    if editor.kind == "parameter" then
+      numbers(row)
+      local choice_count = text:find("  [", 1, true)
+      if choice_count then
+        span(row, "OverseerExperimentMuted", choice_count - 1, #text)
+      end
+    end
+    if
+      text:find("(none selected)", 1, true)
+      or text:find("(not selected)", 1, true)
+      or text:find("(choose a binary)", 1, true)
+    then
+      span(row, "OverseerExperimentWarning", first - 1, #text)
+    end
+    for start, finish in text:gmatch("()%${[%w_]+}()") do
+      span(row, "OverseerExperimentMuted", start - 1, finish - 1)
+    end
+  end
+  for number = 7, footer_start do
+    local row, text = number - 1, lines[number]
+    if
+      text:match("^OPTIONS")
+      or text == "SERVER PROFILES"
+      or text == "SELECTED SERVER SETTINGS"
+      or text:match("^ID   STATE")
+    then
+      highlight(row, "OverseerExperimentSection")
+    elseif state.run_rows[number] then
+      local value = text:match("^%d+%s+(%S+)")
+      match(row, text:match("^%d+"), "OverseerExperimentNumber")
+      match(row, value, status_highlight(value))
+    elseif job_rows[number] then
+      numbers(row)
+      span(row, "OverseerExperimentLabel", 0, 5)
+      local value = display_text(job_rows[number])
+      span(row, status_highlight(value), #text - #value, #text)
+    elseif text:match("^%[[x ]%]") then
+      local selected = text:sub(2, 2) == "x"
+      highlight(row, selected and "OverseerExperimentValue" or "OverseerExperimentMuted")
+      span(row, selected and "OverseerExperimentSuccess" or "OverseerExperimentMuted", 0, 3)
+      match(row, "unconfigured", "OverseerExperimentWarning")
+    elseif text:match("^Plan:") or text:match("^Failure policy:") or text:match("^Output:") then
+      highlight(row, "OverseerExperimentInfo")
+      numbers(row)
+    elseif text:match("^  [%w_]+:") then
+      local delimiter = text:find(":", 1, true)
+      span(row, "OverseerExperimentLabel", 2, delimiter - 1)
+      span(
+        row,
+        (text:match("^  project:") or text:match("^  binary:")) and "OverseerExperimentPath"
+          or "OverseerExperimentValue",
+        delimiter + 1,
+        #text
+      )
+    elseif state.view == "logs" then
+      local lower = text:lower()
+      if
+        lower:match("^%s*error")
+        or lower:find(": error:", 1, true)
+        or lower:find("fatal error", 1, true)
+        or lower:find("cmake error", 1, true)
+        or lower:match("^failed:")
+      then
+        highlight(row, "OverseerExperimentError")
+      elseif
+        lower:match("^%s*warning")
+        or lower:find(": warning:", 1, true)
+        or lower:find("cmake warning", 1, true)
+      then
+        highlight(row, "OverseerExperimentWarning")
+      elseif lower:match("^%-%- configuring done") or lower:match("^%-%- generating done") then
+        highlight(row, "OverseerExperimentSuccess")
+      elseif text == "No output yet" or text:match("^Output for run") then
+        highlight(row, "OverseerExperimentMuted")
+      end
+    end
+  end
+  highlight(footer_start + 1, "OverseerExperimentMuted")
   for index in ipairs(controls) do
-    vim.api.nvim_buf_set_extmark(state.buf, state.ns, footer_start + 1 + index, 0, {
-      end_col = 12,
-      hl_group = "Special",
-    })
+    span(footer_start + 1 + index, "OverseerExperimentLabel", 0, 12)
   end
 end
 

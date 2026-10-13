@@ -770,4 +770,49 @@ describe("experiment panel", function()
         :find("AFTER-SWITCH", 1, true)
     )
   end)
+  it(
+    "makes editable option labels, selected values, and choice counts visible with semantic highlights",
+    function()
+      row_for("threads")
+      local row = vim.api.nvim_win_get_cursor(state.win)[1] - 1
+      local line = vim.api.nvim_buf_get_lines(state.buf, row, row + 1, false)[1]
+      assert.is_truthy(line:find("[2/3 selected]", 1, true))
+      local groups = {}
+      for _, mark in
+        ipairs(vim.api.nvim_buf_get_extmarks(state.buf, state.ns, 0, -1, { details = true }))
+      do
+        if mark[2] == row then
+          groups[mark[4].hl_group] = true
+        end
+      end
+      assert.is_true(groups.OverseerExperimentLabel)
+      assert.is_true(groups.OverseerExperimentValue)
+      assert.is_true(groups.OverseerExperimentNumber)
+      assert.is_true(groups.OverseerExperimentMuted)
+      local original = vim.api.nvim_get_hl(0, { name = "Identifier", link = true })
+      vim.api.nvim_set_hl(0, "Identifier", { fg = 0x13579b })
+      local linked = vim.api.nvim_get_hl(0, { name = "OverseerExperimentLabel", link = false })
+      vim.api.nvim_set_hl(0, "Identifier", original)
+      assert.are.equal(0x13579b, linked.fg)
+    end
+  )
+
+  it("distinguishes errors, warnings, and configure completion in the live log view", function()
+    state.logs = {
+      "CMake Error: missing dependency",
+      "file.cpp:9: warning: unused variable",
+      "-- Configuring done",
+    }
+    panel_key("3")
+    local highlights = {}
+    local lines = vim.api.nvim_buf_get_lines(state.buf, 0, -1, false)
+    for _, mark in
+      ipairs(vim.api.nvim_buf_get_extmarks(state.buf, state.ns, 0, -1, { details = true }))
+    do
+      highlights[lines[mark[2] + 1]] = mark[4].hl_group
+    end
+    assert.are.equal("OverseerExperimentError", highlights[state.logs[1]])
+    assert.are.equal("OverseerExperimentWarning", highlights[state.logs[2]])
+    assert.are.equal("OverseerExperimentSuccess", highlights[state.logs[3]])
+  end)
 end)
