@@ -589,6 +589,18 @@ class ExperimentRunnerTests(unittest.TestCase):
                 ),
             )
 
+    def test_local_export_reserves_the_full_cpu_requirement_for_manual_batch_use(self):
+        manifest = runner.plan(self.config, self.root, self.root / "batch", True)
+        text = runner.script(
+            self.config, manifest, manifest["allocations"][0], "run", True
+        )
+        self.assertIn("#SBATCH --cpus-per-task=4", text)
+        self.assertIn("srun --nodes=1 --ntasks=1 --cpus-per-task=4", text)
+        local = runner.script(
+            self.config, manifest, manifest["allocations"][0], "run", False
+        )
+        self.assertNotIn("srun --nodes=1", local)
+
 
 if __name__ == "__main__":
     unittest.main()

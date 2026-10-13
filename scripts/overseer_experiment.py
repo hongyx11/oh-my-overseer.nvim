@@ -407,6 +407,11 @@ def plan(config, root, output_dir, validate):
                 allocation["slurm"].setdefault(
                     "ntasks", int(allocation["slurm"].get("nodes", 1))
                 )
+            allocation["batch_resources"] = (
+                copy.deepcopy(allocation["slurm"])
+                if allocation["slurm"] is not None
+                else {"cpus_per_task": cpus, "ntasks": 1}
+            )
             if validate:
                 validate_profile(profile, allocation["slurm"], cpus)
             allocations.append(allocation)
@@ -449,7 +454,7 @@ def script(config, manifest, allocation, mode, batch):
     runs = [r for r in manifest["runs"] if r["id"] in allocation["run_ids"]]
     lines = ["#!/usr/bin/env bash"]
     if batch:
-        resources = allocation["slurm"] or {"ntasks": 1, "cpus_per_task": 1}
+        resources = allocation["batch_resources"]
         for key, value in resources.items():
             if value != "":
                 lines.append(
@@ -498,12 +503,13 @@ def script(config, manifest, allocation, mode, batch):
         )
         env = [k + "=" + str(v) for k, v in run["environment"].items()]
         launcher = run["launcher"]
-        if not launcher and allocation["slurm"] is not None:
+        if not launcher and (batch or allocation["slurm"] is not None):
             launcher = [
                 "srun",
                 "--nodes=1",
                 "--ntasks=1",
-                "--cpus-per-task=" + str(allocation["slurm"]["cpus_per_task"]),
+                "--cpus-per-task="
+                + str(allocation["batch_resources"]["cpus_per_task"]),
             ]
         lines.append(
             shlex.join(["env", *env, *launcher, *run["argv"]])
