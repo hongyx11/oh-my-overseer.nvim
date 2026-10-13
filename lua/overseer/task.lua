@@ -94,6 +94,9 @@ function Task.new(opts)
     end
   end
   local name = opts.name
+  if config.cmake.enabled then
+    require("overseer.cmake").apply(opts)
+  end
   if not name then
     local cmd = opts.cmd
     if type(cmd) == "string" then
@@ -141,7 +144,13 @@ function Task.new(opts)
   }
   next_id = next_id + 1
   setmetatable(task, { __index = Task })
+  if config.results.enabled then
+    opts.components = require("overseer.results").prepare(opts.components)
+  end
   task:add_components(opts.components)
+  if config.cmake.enabled and task.metadata.cmake_preset then
+    task:add_component("cmake")
+  end
   ---@cast task overseer.Task
   task:dispatch("on_init")
   local bufnr = task:get_bufnr()
@@ -425,6 +434,7 @@ function Task:reset()
   end
   self.time_start = nil
   self.time_end = nil
+  self.metadata.start_error = nil
   self.result = nil
   self.exit_code = nil
   self.status = STATUS.PENDING
@@ -624,15 +634,28 @@ function Task:start()
     return false
   end
   log.debug("Starting task %s", self.name)
+  if config.results.enabled then
+    -- A child can fail immediately during strategy.start; the parent must already be running.
+    self.time_start = os.time()
+    self.status = STATUS.RUNNING
+    self:dispatch("on_status", self.status)
+    self:dispatch("on_start")
+  end
   local ok, err = pcall(self.strategy.start, self.strategy, self)
   if not ok then
     log.error("Strategy '%s' failed to start for task '%s': %s", self.strategy.name, self.name, err)
+    if config.results.enabled then
+      self.metadata.start_error = tostring(err)
+      self:finalize(STATUS.FAILURE)
+    end
     return false
   end
-  self.time_start = os.time()
-  self.status = STATUS.RUNNING
-  self:dispatch("on_status", self.status)
-  self:dispatch("on_start")
+  if not config.results.enabled then
+    self.time_start = os.time()
+    self.status = STATUS.RUNNING
+    self:dispatch("on_status", self.status)
+    self:dispatch("on_start")
+  end
   local bufnr = self.strategy:get_bufnr()
   if bufnr then
     vim.bo[bufnr].buflisted = false

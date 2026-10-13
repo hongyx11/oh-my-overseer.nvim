@@ -6,6 +6,15 @@ local template = require("overseer.template")
 local window = require("overseer.window")
 
 local M = {}
+M._results = function()
+  require("overseer.results").toggle()
+end
+M._history = function()
+  require("overseer.results").history()
+end
+M._cmake_preset = function()
+  require("overseer.cmake").select()
+end
 
 local function args_or_nil(args)
   return args ~= "" and args or nil

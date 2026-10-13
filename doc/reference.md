@@ -49,6 +49,7 @@
     - [Task:start()](#taskstart)
     - [Task:stop()](#taskstop)
 - [Components](#components)
+  - [cmake](components.md#cmake)
   - [dependencies](components.md#dependencies)
   - [on_complete_dispose](components.md#on_complete_dispose)
   - [on_complete_notify](components.md#on_complete_notify)
@@ -64,6 +65,7 @@
   - [on_result_notify](components.md#on_result_notify)
   - [open_output](components.md#open_output)
   - [restart_on_save](components.md#restart_on_save)
+  - [results](components.md#results)
   - [run_after](components.md#run_after)
   - [timeout](components.md#timeout)
   - [unique](components.md#unique)
@@ -84,6 +86,15 @@ For speed tweakers: don't worry about lazy loading; overseer lazy-loads itself!
 require("overseer").setup({
   -- Patch nvim-dap to support preLaunchTask and postDebugTask
   dap = true,
+  -- Optional results interface: leave task management hidden during workflows.
+  results = {
+    enabled = false,
+    width = 0.45,
+    focus_failure = true,
+    history_limit = 10,
+    run_tasks = { "Run" },
+  },
+  cmake = { enabled = false },
   -- Configure the task output buffer and window
   output = {
     -- Use a terminal buffer to display output. If false, a normal buffer is used
@@ -216,14 +227,17 @@ require("overseer").setup({
 
 ## Commands
 
-| Command              | Args                | Description                                                                           |
-| -------------------- | ------------------- | ------------------------------------------------------------------------------------- |
-| `OverseerOpen[!]`    | `left/right/bottom` | Open the overseer window. With `!` cursor stays in current window                     |
-| `OverseerClose`      |                     | Close the overseer window                                                             |
-| `OverseerToggle[!]`  | `left/right/bottom` | Toggle the overseer window. With `!` cursor stays in current window                   |
-| `OverseerRun`        | `[name/tags]`       | Run a task from a template                                                            |
-| `OverseerShell[!]`   | `[command]`         | Run a shell command as an overseer task. With `!` the task is created but not started |
-| `OverseerTaskAction` |                     | Select a task to run an action on                                                     |
+| Command               | Args                | Description                                                                           |
+| --------------------- | ------------------- | ------------------------------------------------------------------------------------- |
+| `OverseerResults`     |                     | Toggle the latest task results                                                        |
+| `OverseerHistory`     |                     | Browse recent workflow output                                                         |
+| `OverseerCMakePreset` |                     | Select this project's CMake configure preset                                          |
+| `OverseerOpen[!]`     | `left/right/bottom` | Open the overseer window. With `!` cursor stays in current window                     |
+| `OverseerClose`       |                     | Close the overseer window                                                             |
+| `OverseerToggle[!]`   | `left/right/bottom` | Toggle the overseer window. With `!` cursor stays in current window                   |
+| `OverseerRun`         | `[name/tags]`       | Run a task from a template                                                            |
+| `OverseerShell[!]`    | `[command]`         | Run a shell command as an overseer task. With `!` the task is created but not started |
+| `OverseerTaskAction`  |                     | Select a task to run an action on                                                     |
 
 ## Highlight groups
 
@@ -819,6 +833,7 @@ Returns:
 
 <!-- TOC.components -->
 
+- [cmake](components.md#cmake)
 - [dependencies](components.md#dependencies)
 - [on_complete_dispose](components.md#on_complete_dispose)
 - [on_complete_notify](components.md#on_complete_notify)
@@ -834,6 +849,7 @@ Returns:
 - [on_result_notify](components.md#on_result_notify)
 - [open_output](components.md#open_output)
 - [restart_on_save](components.md#restart_on_save)
+- [results](components.md#results)
 - [run_after](components.md#run_after)
 - [timeout](components.md#timeout)
 - [unique](components.md#unique)

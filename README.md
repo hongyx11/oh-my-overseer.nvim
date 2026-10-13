@@ -5,6 +5,7 @@ A task runner and job management plugin for Neovim
 <!-- TOC -->
 
 - [Features](#features)
+- [Results interface (hongyx11 fork)](#results-interface-hongyx11-fork)
 - [Requirements](#requirements)
 - [Installation](#installation)
 - [Quick start](#quick-start)
@@ -62,6 +63,13 @@ A task runner and job management plugin for Neovim
 - Extreme customizability. Very easy to attach custom logic to tasks
 - Define and run complex multi-stage workflows
 - Support for `preLaunchTask` when used with [nvim-dap](https://github.com/mfussenegger/nvim-dap)
+
+## Results interface (hongyx11 fork)
+
+An optional results interface keeps configure/build tasks in the background,
+shows program output in a reusable window on the right, and opens the failing
+command's log automatically. It includes recent workflow history and a CMake
+preset selector. See [the results guide](doc/results.md) for setup and behavior.
 
 ## Requirements
 

@@ -325,8 +325,16 @@ function JobstartStrategy:start(task)
 
   if self.job_id == 0 then
     log.error("Invalid arguments for task '%s'", task.name)
+    if require("overseer.config").results.enabled then
+      error("Invalid command arguments")
+    end
   elseif self.job_id == -1 then
     log.error("Command '%s' not executable", task.cmd)
+    if require("overseer.config").results.enabled then
+      error(
+        "Command is not executable: " .. (type(task.cmd) == "table" and task.cmd[1] or task.cmd)
+      )
+    end
   else
     register(self.job_id)
   end

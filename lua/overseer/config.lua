@@ -1,6 +1,15 @@
 local default_config = {
   -- Patch nvim-dap to support preLaunchTask and postDebugTask
   dap = true,
+  -- Optional results interface: leave task management hidden during workflows.
+  results = {
+    enabled = false,
+    width = 0.45,
+    focus_failure = true,
+    history_limit = 10,
+    run_tasks = { "Run" },
+  },
+  cmake = { enabled = false },
   -- Configure the task output buffer and window
   output = {
     -- Use a terminal buffer to display output. If false, a normal buffer is used
@@ -139,6 +148,11 @@ M.setup = function(opts)
   opts = opts or {}
 
   local newconf = vim.tbl_deep_extend("force", default_config, opts)
+  assert(
+    newconf.results.width > 0 and newconf.results.width < 1,
+    "results.width must be between 0 and 1"
+  )
+  assert(newconf.results.history_limit >= 1, "results.history_limit must be positive")
   for k, v in pairs(newconf) do
     M[k] = v
   end
@@ -171,6 +185,8 @@ end
 ---@class (exact) overseer.Config
 ---@field setup fun(opts: overseer.SetupOpts)
 ---@field dap boolean
+---@field results overseer.ConfigResults
+---@field cmake {enabled: boolean}
 ---@field log_level integer
 ---@field experimental_wrap_builtins overseer.ConfigWrapBuiltins
 ---@field output overseer.ConfigOutput
@@ -186,6 +202,8 @@ end
 
 ---@class (exact) overseer.SetupOpts
 ---@field dap? boolean Patch nvim-dap to support preLaunchTask and postDebugTask
+---@field results? overseer.SetupConfigResults
+---@field cmake? {enabled?: boolean}
 ---@field log_level? integer Log level
 ---@field experimental_wrap_builtins? overseer.SetupConfigWrapBuiltins
 ---@field output? overseer.SetupConfigOutput
@@ -198,6 +216,20 @@ end
 ---@field disable_template_modules? string[] List of module names or lua patterns that match modules
 ---@field template_timeout_ms? integer For template providers, how long to wait (in ms) before timing out. Set to 0 to disable timeouts.
 ---@field template_cache_threshold_ms? integer Cache template provider results if the provider takes longer than this to run. Time is in ms. Set to 0 to disable caching.
+
+---@class (exact) overseer.ConfigResults
+---@field enabled boolean
+---@field width number
+---@field focus_failure boolean
+---@field history_limit integer
+---@field run_tasks string[]
+
+---@class (exact) overseer.SetupConfigResults
+---@field enabled? boolean
+---@field width? number Fraction of editor width used by the right results window
+---@field focus_failure? boolean
+---@field history_limit? integer Completed workflow history per project
+---@field run_tasks? string[] Tasks whose output is shown live
 
 ---@class (exact) overseer.ConfigWrapBuiltins
 ---@field enabled boolean overseer will hook vim.system and vim.fn.jobstart and display those as tasks

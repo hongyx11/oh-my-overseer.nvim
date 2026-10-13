@@ -4,6 +4,21 @@ local M = {}
 
 local commands = {
   {
+    cmd = "OverseerResults",
+    func = "_results",
+    def = { desc = "Toggle the latest task results" },
+  },
+  {
+    cmd = "OverseerHistory",
+    func = "_history",
+    def = { desc = "Browse recent workflow output" },
+  },
+  {
+    cmd = "OverseerCMakePreset",
+    func = "_cmake_preset",
+    def = { desc = "Select this project's CMake configure preset" },
+  },
+  {
     cmd = "OverseerOpen",
     args = "`left/right/bottom`",
     func = "_open",

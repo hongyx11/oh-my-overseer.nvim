@@ -2,6 +2,7 @@
 
 <!-- TOC -->
 
+- [cmake](#cmake)
 - [dependencies](#dependencies)
 - [on_complete_dispose](#on_complete_dispose)
 - [on_complete_notify](#on_complete_notify)
@@ -17,11 +18,18 @@
 - [on_result_notify](#on_result_notify)
 - [open_output](#open_output)
 - [restart_on_save](#restart_on_save)
+- [results](#results)
 - [run_after](#run_after)
 - [timeout](#timeout)
 - [unique](#unique)
 
 <!-- /TOC -->
+
+## cmake
+
+[cmake.lua](../lua/overseer/component/cmake.lua)
+
+Resolve the selected CMake executable when its Run task starts
 
 ## dependencies
 
@@ -240,6 +248,12 @@ Restart on any buffer :write
 | paths     | `list[string]` |             | Only restart when writing files in these paths (can be directory or file)           |
 
 - **mode:** 'autocmd' will set autocmds on BufWritePost. 'uv' will use a libuv file watcher (recursive watching may not be supported on all platforms).
+
+## results
+
+[results.lua](../lua/overseer/component/results.lua)
+
+Show compact workflow status and reusable task results
 
 ## run_after
 
