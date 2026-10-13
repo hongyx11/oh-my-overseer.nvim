@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+import time
 
 
 def main(argv):
@@ -17,7 +18,7 @@ def main(argv):
     text = sys.stdin.read() if name == "sbatch" else None
     with (root / "calls.jsonl").open("a") as stream:
         stream.write(json.dumps({"argv": [name, *args], "input": text}) + "\n")
-    if name == "sbatch":
+    if name in {"sbatch", "salloc"}:
         with (root / "counter").open("a+") as counter:
             fcntl.flock(counter, fcntl.LOCK_EX)
             counter.seek(0)
@@ -25,6 +26,14 @@ def main(argv):
             counter.seek(0)
             counter.truncate()
             counter.write(str(number))
+        if name == "salloc":
+            while (root / "pending").exists():
+                time.sleep(0.05)
+            os.environ["SLURM_JOB_ID"] = str(number)
+            os.environ["SLURM_NODELIST"] = "fake-compute"
+            while args and args[0].startswith("--"):
+                args.pop(0)
+            os.execvp(args[0], args)
         (root / (str(number) + ".sbatch")).write_text(text)
         status = "RUNNING"
         if os.environ.get("OMO_FAKE_SLURM_RUN") == "1":

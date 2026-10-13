@@ -1,3 +1,4 @@
+local progress = require("overseer.experiment_progress")
 local store = require("overseer.experiment_store")
 local M = {}
 local states = {}
@@ -88,9 +89,12 @@ vim.api.nvim_create_autocmd("VimResized", {
 })
 
 local function helper()
-  return assert(
-    vim.api.nvim_get_runtime_file("scripts/overseer_experiment.py", false)[1],
-    "Experiment runner is missing"
+  return vim.fn.fnamemodify(
+    assert(
+      vim.api.nvim_get_runtime_file("scripts/overseer_experiment.py", false)[1],
+      "Experiment runner is missing"
+    ),
+    ":p"
   )
 end
 
@@ -398,12 +402,12 @@ render = function(state)
   end
   local footer_start = #lines
   local controls = {
-    { "Experiments", "N new · O switch · L load" },
+    { "Experiments", "M manager · N new · O switch · L load" },
     { "Options", "Enter/m edit row · a add · s settings" },
     { "Build setup", "p preset · T target · b binary" },
     { "Execute", "C configure · B build · r run · x stop" },
     { "Files", "w save · e edit JSON · R reload · E export" },
-    { "Remote", "Y sync source · A reconnect" },
+    { "Remote", "Y sync · A reconnect · D release" },
     { "Slurm", "S submit · u refresh · X cancel" },
     { "View", "1 config · 2 runs · 3 logs · Esc/q close" },
   }
@@ -992,9 +996,18 @@ modify_row = function(state)
 end
 
 local function process_event(state, event)
+  progress.event(state.root, state.file, event)
   if event.event == "session" then
     state.session_folder, state.execution_mode = event.folder, event.mode
     store.record_session(state.root, state.file, event.folder, event.mode)
+  elseif event.event == "stage" then
+    state.status = event.stage:gsub("^%l", string.upper)
+      .. " · "
+      .. event.status
+      .. " · "
+      .. event.server
+  elseif event.event == "released" then
+    state.status = "Resources released · " .. event.server
   elseif event.event == "sync" then
     state.status = "Syncing source · " .. event.server
   elseif event.event == "synced" then
@@ -1098,9 +1111,18 @@ end
 
 action = function(state, mode, override)
   if state.task and state.task:is_running() then
-    if mode == "cancel" then
+    if mode == "release" then
+      vim.notify("Cancel the active command before releasing resources", vim.log.levels.INFO)
+      return
+    elseif mode == "cancel" then
       state.generation = state.generation + 1
       state.task:stop()
+      if vim.fn.filereadable((state.folder or "") .. "/session.json") == 0 then
+        state.status = "CANCELED"
+        progress.complete(state.root, state.file, "CANCELED")
+        render(state)
+        return
+      end
     else
       vim.notify("This experiment is already running", vim.log.levels.INFO)
       return
@@ -1138,6 +1160,7 @@ action = function(state, mode, override)
   state.logs = {}
   state.disconnected = false
   state.status = mode .. "…"
+  progress.begin(state.root, state.file, mode, state.resolved)
   vim.fn.mkdir(state.folder, "p")
   local snapshot = state.folder .. "/launch.json"
   if mode ~= "reconnect" and mode ~= "poll" and mode ~= "cancel" then
@@ -1155,6 +1178,7 @@ action = function(state, mode, override)
     cancel = "Cancel saved jobs",
     sync = "Synchronize source",
     reconnect = "Reconnect to saved execution",
+    release = "Release held allocations",
   }
   state.log_name = names[mode]
   local task = require("overseer").new_task({
@@ -1211,8 +1235,16 @@ action = function(state, mode, override)
         run_log(state, first_failed)
       end
     end
+    progress.complete(state.root, state.file, state.disconnected and "DISCONNECTED" or status)
     refresh(state)
     render(state)
+    if mode == "submit" and status == "SUCCESS" then
+      vim.schedule(function()
+        if state.generation == generation then
+          action(state, "reconnect")
+        end
+      end)
+    end
   end)
   refresh(state)
   task:start()
@@ -1267,6 +1299,9 @@ local function map_panel(state)
   map("N", function()
     new_experiment(state)
   end)
+  map("M", function()
+    require("overseer.experiment_manager").toggle(state.root)
+  end)
   map("O", function()
     choose_experiment(state)
   end)
@@ -1279,6 +1314,7 @@ local function map_panel(state)
     u = "poll",
     X = "cancel",
     A = "reconnect",
+    D = "release",
   }) do
     map(key, function()
       action(state, mode)
@@ -1316,6 +1352,7 @@ local function map_panel(state)
       state.generation = state.generation + 1
       state.task:stop()
       state.status = "CANCELED"
+      progress.complete(state.root, state.file, "CANCELED")
       render(state)
     else
       action(state, "cancel")
@@ -1395,6 +1432,72 @@ local function open_state(state, focus)
     and vim.fn.filereadable(state.session_folder .. "/session.json") == 1
   then
     action(state, "reconnect")
+  end
+  return state
+end
+
+function M.poll_resources(project, file)
+  local state = state_for_file(project, file)
+  if state.resource_poll then
+    return
+  end
+  state.resource_poll = true
+  vim.system(
+    command(state, "resources", nil, file),
+    { text = true },
+    vim.schedule_wrap(function(result)
+      state.resource_poll = false
+      if result.code == 0 then
+        for _, line in ipairs(vim.split(result.stdout or "", "\n", { plain = true })) do
+          if line:sub(1, #MARKER) == MARKER then
+            local ok, event = pcall(vim.json.decode, line:sub(#MARKER + 1))
+            if ok then
+              progress.event(project, file, event)
+            end
+          end
+        end
+      end
+    end)
+  )
+end
+
+function M.execute_file(project, file, mode)
+  local state = state_for_file(project, file)
+  if not state.session_folder then
+    local session = store.session(project, file)
+    state.session_folder, state.execution_mode = session.folder, session.mode
+  end
+  if mode == "sync" and state.task and state.task:is_running() then
+    vim.system(
+      command(state, "sync", nil, file),
+      { text = true },
+      vim.schedule_wrap(function(result)
+        if result.code ~= 0 then
+          vim.notify(result.stdout or result.stderr or "Source sync failed", vim.log.levels.ERROR)
+        else
+          vim.notify("Remote source synchronized", vim.log.levels.INFO)
+        end
+      end)
+    )
+  else
+    action(state, mode)
+  end
+  return state
+end
+
+function M.watch_file(project, file)
+  local state = state_for_file(project, file)
+  if state.task and state.task:is_running() then
+    return state
+  end
+  local session = store.session(project, file)
+  if session.folder and vim.fn.filereadable(session.folder .. "/session.json") == 1 then
+    local receipt = store.read(session.folder .. "/session.json")
+    for _, entry in ipairs(receipt.entries or {}) do
+      if entry.attempted and (not entry.state or not entry.state.terminal) then
+        return M.execute_file(project, file, "reconnect")
+      end
+    end
   end
   return state
 end

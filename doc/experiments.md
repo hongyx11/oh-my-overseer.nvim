@@ -80,10 +80,10 @@ editor floats.
 | Enter / `m` | Modify the highlighted configuration/option row; inspect a Runs row |
 | `a` | Add a shared option or create a new option |
 | `s` on an option | Presets, values, bindings, publish, remove |
-| `N`, `O` | New/copy experiment, choose saved experiment |
+| `N`, `O`, `M` | New/copy experiment, choose saved experiment, open manager |
 | `p`, `T`, `b` | Choose CMake preset, executable target, binary |
 | `C`, `B`, `r` | Sync source, configure, build, run combinations sequentially |
-| `Y`, `A` | Sync source, reconnect to the saved session |
+| `Y`, `A`, `D` | Sync source, reconnect to the saved session, release held allocations |
 | `w`, `e`, `R` | Save, close float and edit JSON, reload |
 | `E`, `L` | Export a portable bundle, load another source JSON |
 | `S`, `u`, `X` | Submit Slurm jobs, refresh states, cancel recorded jobs |
@@ -323,6 +323,45 @@ explicitly authorized lair testbed with account `yuxilab` and a small allocation
 The active Neovim integration calls these same owners; no separate upload/task
 state machine remains.
 
+## Persistent interactive allocations and experiment management
+
+Open `:OverseerExperiments` (or `M` in the detail panel) to manage named
+experiments together. Each entry shows its selected server, scheduler IDs, and
+Resources → Configure → Build → Run. Theme-aware icons distinguish waiting `◌`,
+active `↻`, successful `✓`, failed `✗`, canceled `■`, and released `○` stages.
+Progress is saved in `.overseer/state.json`; opening the manager reconnects to
+unfinished saved sessions. Batch submission automatically starts an observer.
+
+Move to an experiment and press `c` to copy it, name the copy, and choose another
+server. The copy retains parameter selections and build settings and gets a new
+execution identity. It inherits no job handles or progress. Different experiments
+can execute concurrently, including on one host: remote source/build workspaces,
+allocation ownership, logs, and observers are independent. Keep build paths
+relative to each workspace to retain this isolation.
+
+| Manager key | Action |
+| --- | --- |
+| Enter | Open this experiment's settings and live logs (`3`) |
+| `c`, `N` | Copy and choose a server, create an empty experiment |
+| `C`, `B`, `r`, `S` | Configure, build, interactive run, batch submission |
+| `Y`, `A` | Publish saved source, reconnect |
+| `x`, `D` | Cancel this command/job, release held interactive resources |
+| `R`, `q` / Esc | Refresh the list, close while experiments continue |
+
+Interactive Slurm resources belong to a named experiment and resolved resource
+policy. Configure, build, run, and subsequent source revisions reuse its live
+allocation. Configure/build commands and trials execute as compute-node `srun`
+steps. Completing or canceling a command keeps the allocation available. `D` or
+`:OverseerRelease` releases this experiment's allocations on its selected hosts;
+cancel an active command first. Slurm's configured time limit also ends the
+allocation. Expired allocations are replaced on the next invocation. Allocation
+expiry is refreshed while the manager is open. Resource changes create separate
+allocations, and copied experiments never share another experiment's allocation.
+
+`S` uses independent `sbatch` jobs; it does not consume the interactive allocation.
+Each experiment runs its own resource groups sequentially in interactive mode;
+batch groups and separate experiments can progress concurrently.
+
 ## Source revisions and agent installation
 
 Each connection installs the versioned, stdlib-only Linux agent through normal
@@ -345,7 +384,7 @@ local compilation database are excluded by default. Relative source symlinks
 are retained; links outside the source project are rejected.
 
 Content checksums and executable modes define the source revision. Build
-commands, preset, target, host setup/environment, and GPU option selection also
+commands, experiment identity, preset, target, host setup/environment, and GPU option selection also
 separate build workspaces. Changing a build configuration never reuses another
 configuration's build cache. Objects transfer once; complete revisions publish
 atomically and preserve deletions/renames without modifying the remote checkout.

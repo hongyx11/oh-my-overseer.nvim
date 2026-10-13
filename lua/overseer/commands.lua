@@ -15,6 +15,14 @@ end
 M._experiment_cancel = function()
   require("overseer.experiment").cancel()
 end
+M._experiments = function()
+  require("overseer.experiment_manager").toggle(require("overseer.results").context_project())
+end
+M._release = function()
+  local store = require("overseer.experiment_store")
+  local project = require("overseer.results").context_project()
+  require("overseer.experiment").execute_file(project, store.active(project), "release")
+end
 M._experiment = function()
   require("overseer.experiment").toggle()
 end

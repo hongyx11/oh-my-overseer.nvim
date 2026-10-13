@@ -144,7 +144,7 @@ class ProjectStore:
             raise ValueError("Project directory must be absolute")
         self.root = Path(root).resolve()
         self.directory = self.root / ".omo"
-        for name in ("objects", "workspaces", "jobs", "locks"):
+        for name in ("objects", "workspaces", "jobs", "locks", "allocations"):
             (self.directory / name).mkdir(parents=True, exist_ok=True, mode=0o700)
 
     def folder(self, job):
@@ -368,7 +368,11 @@ class ProjectStore:
         launch = read_json(folder / "request.json")
         path = Path(launch["trial_logs"][str(request["run_id"])])
         with path.open("rb") as source:
-            data = b"".join(deque(source, maxlen=300))
+            data = b"".join(
+                line
+                for line in deque(source, maxlen=300)
+                if not line.startswith(MARKER.encode())
+            )
         return {"data": base64.b64encode(data).decode()}
 
     def list_jobs(self):
@@ -407,7 +411,9 @@ class ProjectStore:
         request = read_json(folder / "request.json")
         self.update(folder, {"worker": process_identity(os.getpid())})
         execution = EXECUTIONS[request["scheduler"]](self, folder, request)
-        key = request["revision"] or "local"
+        key = request["revision"] or digest(
+            {"experiment": request.get("experiment", "local")}
+        )
         with (self.directory / "locks" / (key + ".execute")).open("a") as lock:
             while True:
                 if (folder / "cancel").exists():
@@ -438,15 +444,17 @@ class ProcessExecution:
     def cancel(self, state):
         return state
 
-    def execute(self):
-        command = (
-            "set -e\n"
-            + ("\n".join(self.request["setup"]) if self.request["launcher"] else "")
-            + "\nexec "
-            + shlex.join(
-                [*self.request["launcher"], "bash", str(self.folder / "script.sh")]
+    def command(self):
+        if self.request.get("launcher"):
+            raise ValueError(
+                "Per-command allocations are obsolete; start a new session"
             )
-        )
+        return "exec " + shlex.join(["bash", str(self.folder / "script.sh")])
+
+    def execute(self):
+        command = self.command()
+        if command is None:
+            return
         with (self.folder / "output.log").open("ab") as output:
             process = subprocess.Popen(
                 ["bash", "-lc", command],
@@ -485,6 +493,257 @@ class ProcessExecution:
             )
         )
         self.store.finish(self.folder, status)
+
+
+class AllocationPool:
+    """Owns allocation lifetime independently of commands and observers."""
+
+    def __init__(self, store):
+        self.store = store
+        self.directory = store.directory / "allocations"
+
+    def folder(self, identifier):
+        return self.directory / safe_token(identifier, 32)
+
+    def refresh(self, folder):
+        state = read_json(folder / "state.json")
+        if not state["terminal"] and (
+            (state["worker"] and not alive(state["worker"]))
+            or (state["worker"] is None and time.time() - state["created_at"] > 5)
+        ):
+            if state["job_id"] is not None:
+                request = read_json(folder / "request.json")
+                command = (
+                    "set -e\n"
+                    + "\n".join(request["setup"])
+                    + "\nexec "
+                    + shlex.join(["scancel", state["job_id"]])
+                )
+                try:
+                    result = subprocess.run(
+                        ["bash", "-lc", command],
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                    )
+                    if result.returncode != 0:
+                        self.store.update(
+                            folder,
+                            {
+                                "error": "Allocation supervisor lost; scancel failed: "
+                                + result.stderr
+                            },
+                        )
+                except (OSError, subprocess.TimeoutExpired) as error:
+                    self.store.update(
+                        folder,
+                        {
+                            "error": "Allocation supervisor lost; release failed: "
+                            + str(error)
+                        },
+                    )
+            if alive(state["child"]):
+                try:
+                    os.killpg(state["child"]["pid"], signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+            self.store.update(folder, {"status": "LOST", "terminal": True})
+            state = read_json(folder / "state.json")
+        return state
+
+    def observe(self, request):
+        return [
+            self.refresh(path.parent)
+            for path in sorted(self.directory.glob("*/state.json"))
+            if request["experiment"] is None
+            or read_json(path)["experiment"] == request["experiment"]
+        ]
+
+    def acquire(self, request):
+        policy = {k: request[k] for k in ("experiment", "resources", "setup")}
+        key = digest(policy)
+        with (self.store.directory / "locks/allocations").open("a") as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)
+            for state in self.observe({"experiment": request["experiment"]}):
+                folder = self.folder(state["id"])
+                if (
+                    state["key"] == key
+                    and not state["terminal"]
+                    and not (folder / "release").exists()
+                ):
+                    return state
+            identifier = uuid.uuid4().hex
+            folder = self.folder(identifier)
+            folder.mkdir(mode=0o700)
+            state = {
+                "id": identifier,
+                "key": key,
+                "experiment": request["experiment"],
+                "resources": request["resources"],
+                "status": "PENDING",
+                "terminal": False,
+                "created_at": time.time(),
+                "job_id": None,
+                "worker": None,
+                "child": None,
+            }
+            atomic_json(folder / "state.json", state)
+            atomic_json(folder / "request.json", policy)
+            with (folder / "output.log").open("ab") as output:
+                subprocess.Popen(
+                    [
+                        sys.executable,
+                        str(Path(__file__).resolve()),
+                        "allocation-worker",
+                        "--root",
+                        str(self.store.root),
+                        "--job",
+                        identifier,
+                    ],
+                    stdin=subprocess.DEVNULL,
+                    stdout=output,
+                    stderr=output,
+                    start_new_session=True,
+                    close_fds=True,
+                )
+            return state
+
+    def release(self, request):
+        values = self.observe(request)
+        for state in values:
+            if not state["terminal"]:
+                (self.folder(state["id"]) / "release").touch()
+        return values
+
+    def hold(self, identifier):
+        folder = self.folder(identifier)
+        job_id = os.environ.get("SLURM_JOB_ID", "")
+        if not job_id.isdigit():
+            raise RuntimeError("salloc did not provide SLURM_JOB_ID")
+        self.store.update(
+            folder,
+            {
+                "status": "READY",
+                "job_id": job_id,
+                "nodes": os.environ.get("SLURM_NODELIST", ""),
+            },
+        )
+        while not (folder / "release").exists():
+            time.sleep(0.2)
+
+    def worker(self, identifier):
+        folder = self.folder(identifier)
+        request = read_json(folder / "request.json")
+        self.store.update(folder, {"worker": process_identity(os.getpid())})
+        flags = {"memory": "mem", "cpus_per_task": "cpus-per-task"}
+        argv = [
+            "salloc",
+            *[
+                "--" + flags.get(key, key.replace("_", "-")) + "=" + str(value)
+                for key, value in request["resources"].items()
+                if value != ""
+            ],
+            sys.executable,
+            str(Path(__file__).resolve()),
+            "allocation-hold",
+            "--root",
+            str(self.store.root),
+            "--job",
+            identifier,
+        ]
+        command = (
+            "set -e\n" + "\n".join(request["setup"]) + "\nexec " + shlex.join(argv)
+        )
+        try:
+            with (folder / "output.log").open("ab") as output:
+                process = subprocess.Popen(
+                    ["bash", "-lc", command],
+                    stdin=subprocess.DEVNULL,
+                    stdout=output,
+                    stderr=output,
+                    start_new_session=True,
+                    close_fds=True,
+                )
+                self.store.update(folder, {"child": process_identity(process.pid)})
+                released = None
+                while process.poll() is None:
+                    if (folder / "release").exists():
+                        if released is None:
+                            released = time.monotonic()
+                            # The holder normally exits itself; pending salloc has no holder yet.
+                            if read_json(folder / "state.json")["status"] != "READY":
+                                os.killpg(process.pid, signal.SIGTERM)
+                        elif time.monotonic() - released > 3:
+                            os.killpg(process.pid, signal.SIGKILL)
+                    time.sleep(0.05)
+            previous = read_json(folder / "state.json")
+            status = (
+                "RELEASED"
+                if (folder / "release").exists()
+                else ("EXPIRED" if previous["status"] == "READY" else "FAILURE")
+            )
+            self.store.update(
+                folder, {"status": status, "terminal": True, "finished_at": time.time()}
+            )
+        except Exception as error:
+            self.store.update(
+                folder, {"status": "FAILURE", "terminal": True, "error": str(error)}
+            )
+
+
+class AllocationExecution(ProcessExecution):
+    def command(self):
+        pool = AllocationPool(self.store)
+        allocation = pool.acquire(self.request)
+        previous = None
+        while True:
+            allocation = pool.refresh(pool.folder(allocation["id"]))
+            if allocation["status"] != previous:
+                previous = allocation["status"]
+                self.store.update(
+                    self.folder,
+                    {
+                        "status": "WAITING_RESOURCES",
+                        "allocation_session": allocation["id"],
+                        "allocation_status": allocation["status"],
+                        "job_id": allocation["job_id"],
+                    },
+                )
+                append_event(
+                    self.folder,
+                    "stage",
+                    {
+                        "stage": "resources",
+                        "status": (
+                            "SUCCESS"
+                            if previous == "READY"
+                            else ("FAILURE" if allocation["terminal"] else "PENDING")
+                        ),
+                        "server": self.request["server"],
+                        "allocation": self.request["allocation"],
+                        "allocation_session": allocation["id"],
+                        "job_id": allocation["job_id"],
+                    },
+                )
+            if (self.folder / "cancel").exists():
+                self.store.finish(self.folder, "CANCELED")
+                return None
+            if allocation["terminal"]:
+                detail = (pool.folder(allocation["id"]) / "output.log").read_text(
+                    errors="replace"
+                )
+                raise RuntimeError(
+                    "Allocation ended: " + allocation["status"] + "\n" + detail
+                )
+            if previous == "READY":
+                break
+            time.sleep(0.1)
+        return (
+            "export SLURM_JOB_ID="
+            + shlex.quote(allocation["job_id"])
+            + "\n"
+            + super().command()
+        )
 
 
 class SlurmExecution:
@@ -603,7 +862,11 @@ class SlurmExecution:
         self.store.update(self.folder, {"last_poll": 0})
 
 
-EXECUTIONS = {"process": ProcessExecution, "slurm": SlurmExecution}
+EXECUTIONS = {
+    "process": ProcessExecution,
+    "slurm": SlurmExecution,
+    "allocation": AllocationExecution,
+}
 
 
 def serve(root):
@@ -630,6 +893,8 @@ def serve(root):
         "cancel": store.cancel,
         "trial_log": store.trial_log,
         "targets": store.targets,
+        "allocations_observe": AllocationPool(store).observe,
+        "allocations_release": AllocationPool(store).release,
     }
     print(json.dumps({"protocol": PROTOCOL}), flush=True)
     for line in sys.stdin:
@@ -649,12 +914,29 @@ def main(argv):
         action="version",
         version="Oh My Overseer agent protocol " + str(PROTOCOL),
     )
-    parser.add_argument("action", choices=("serve", "worker", "list", "logs", "cancel"))
+    parser.add_argument(
+        "action",
+        choices=(
+            "serve",
+            "worker",
+            "list",
+            "logs",
+            "cancel",
+            "allocation-worker",
+            "allocation-hold",
+        ),
+    )
     parser.add_argument("--root", required=True)
     parser.add_argument("--job")
     args = parser.parse_args(argv)
     if args.action == "serve":
         serve(args.root)
+    elif args.action.startswith("allocation-"):
+        pool = AllocationPool(ProjectStore(args.root))
+        if args.action == "allocation-worker":
+            pool.worker(safe_token(args.job, 32))
+        else:
+            pool.hold(safe_token(args.job, 32))
     elif args.action == "worker":
         ProjectStore(args.root).worker(safe_token(args.job, 32))
     elif args.action == "list":

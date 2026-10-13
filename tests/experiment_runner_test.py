@@ -34,6 +34,7 @@ class ExperimentRunnerTests(unittest.TestCase):
         self.binary.chmod(493)
         self.config = {
             "version": 2,
+            "experiment_id": "test-experiment",
             "name": "matrix test",
             "project": ".",
             "binary": "probe.py",
@@ -110,6 +111,22 @@ class ExperimentRunnerTests(unittest.TestCase):
                             if value["state"]["terminal"]:
                                 break
                             time.sleep(0.02)
+        if list((self.root / ".omo/allocations").glob("*/state.json")):
+            with runner.Connection(
+                {"kind": "local", "project_dir": str(self.root)},
+                MODULE_PATH.with_name("omo_agent.py"),
+            ) as connection:
+                connection.request("allocations_release", {"experiment": None})
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    if all(
+                        s["terminal"]
+                        for s in connection.request(
+                            "allocations_observe", {"experiment": None}
+                        )
+                    ):
+                        break
+                    time.sleep(0.03)
         self.directory.cleanup()
 
     def scheduler_calls(self):
@@ -267,7 +284,14 @@ class ExperimentRunnerTests(unittest.TestCase):
         calls = self.scheduler_calls()
         submitted = [c for c in calls if c["argv"][0] == "sbatch"]
         self.assertIn("#SBATCH --cpus-per-task=4", submitted[0]["input"])
-        self.assertEqual(["scancel", "301"], calls[-1]["argv"])
+        self.assertEqual(
+            [["scancel", "301"]],
+            [c["argv"] for c in calls if c["argv"][0] == "scancel"],
+        )
+        self.assertEqual(
+            "CANCELED",
+            runner.read(folder / "session.json")["entries"][0]["state"]["status"],
+        )
         self.assertEqual(
             "301", runner.read(folder / "session.json")["entries"][0]["state"]["job_id"]
         )
@@ -690,13 +714,13 @@ class ExperimentRunnerTests(unittest.TestCase):
         with runner.ExecutionSession(self.root / "scheduler-failed") as session:
             session.prepare(self.config, self.root, "run")
             entry = session.data["entries"][0]
-            entry["request"]["launcher"] = []
+            entry["request"]["scheduler"] = "process"
             entry["request"]["script"] = runner.marker_line("finish", id=1, exit_code=7)
             self.assertEqual(1, session.execute(False))
         with runner.ExecutionSession(self.root / "scheduler-empty") as session:
             session.prepare(self.config, self.root, "run")
             entry = session.data["entries"][0]
-            entry["request"]["launcher"] = []
+            entry["request"]["scheduler"] = "process"
             entry["request"]["script"] = "true"
             self.assertEqual(1, session.execute(False))
 

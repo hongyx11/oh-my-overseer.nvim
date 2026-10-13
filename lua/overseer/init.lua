@@ -4,6 +4,16 @@ local M = {}
 
 local commands = {
   {
+    cmd = "OverseerExperiments",
+    func = "_experiments",
+    def = { desc = "Manage parallel experiments and stage progress" },
+  },
+  {
+    cmd = "OverseerRelease",
+    func = "_release",
+    def = { desc = "Release this experiment's held interactive allocations" },
+  },
+  {
     cmd = "OverseerSync",
     func = "_source_sync",
     def = { desc = "Publish a captured source revision to selected remote hosts" },

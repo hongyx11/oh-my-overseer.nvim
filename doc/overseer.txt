@@ -16,6 +16,12 @@ CONTENTS                                                       *overseer-content
 --------------------------------------------------------------------------------
 COMMANDS                                                       *overseer-commands*
 
+OverseerExperiments                                         *:OverseerExperiments*
+    Manage parallel experiments and stage progress
+
+OverseerRelease                                                 *:OverseerRelease*
+    Release this experiment's held interactive allocations
+
 OverseerSync                                                       *:OverseerSync*
     Publish a captured source revision to selected remote hosts
 

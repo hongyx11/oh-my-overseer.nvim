@@ -42,7 +42,6 @@ class RemoteSessionTests(unittest.TestCase):
             "scheduler": "process",
             "resources": {},
             "setup": [],
-            "launcher": [],
             "expected_runs": [],
             "expected_build": None,
         }

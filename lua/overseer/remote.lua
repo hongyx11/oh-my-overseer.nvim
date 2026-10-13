@@ -12,7 +12,10 @@ local function dispatch(project)
   queue.manual = false
   local argv = {
     require("overseer.config").experiment.python,
-    assert(vim.api.nvim_get_runtime_file("scripts/overseer_experiment.py", false)[1]),
+    vim.fn.fnamemodify(
+      assert(vim.api.nvim_get_runtime_file("scripts/overseer_experiment.py", false)[1]),
+      ":p"
+    ),
     "sync",
     store.active(project),
     "--project",

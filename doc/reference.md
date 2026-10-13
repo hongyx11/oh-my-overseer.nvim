@@ -231,6 +231,8 @@ require("overseer").setup({
 
 | Command                    | Args                | Description                                                                           |
 | -------------------------- | ------------------- | ------------------------------------------------------------------------------------- |
+| `OverseerExperiments`      |                     | Manage parallel experiments and stage progress                                        |
+| `OverseerRelease`          |                     | Release this experiment's held interactive allocations                                |
 | `OverseerSync`             |                     | Publish a captured source revision to selected remote hosts                           |
 | `OverseerReconnect`        |                     | Reconnect to the experiment's saved execution session                                 |
 | `OverseerExperimentCancel` |                     | Cancel the experiment's owned process or Slurm jobs                                   |

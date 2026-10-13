@@ -11,6 +11,7 @@ from collections import deque
 import copy
 import datetime as dt
 import itertools
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -239,6 +240,9 @@ def load_config(path, project, library_path):
         else {"options": {}}
     )
     config = resolve_config(source, library)
+    config["experiment_id"] = (
+        source.get("experiment_id") or hashlib.sha256(str(path).encode()).hexdigest()
+    )
     root = (
         Path(project).resolve()
         if project
@@ -576,6 +580,16 @@ def script(config, manifest, allocation, mode, batch):
     for key, value in profile.get("environment", {}).items():
         if "${" not in str(value):
             lines.append("export " + key + "=" + shlex.quote(str(value)))
+    if batch or allocation["slurm"] is None:
+        lines.append(
+            marker_line(
+                "stage",
+                stage="resources",
+                status="SUCCESS",
+                server=profile["id"],
+                allocation=allocation["id"],
+            )
+        )
     if build_only or config.get("build", {}).get("before_run", False):
         directory = config.get("build", {}).get("directory")
         if directory:
@@ -589,13 +603,46 @@ def script(config, manifest, allocation, mode, batch):
         commands = build_commands(config, profile)
         if not commands:
             raise ValueError("Set build.commands before configuring or building")
-        for argv in commands[:1] if configure_only else commands:
+        for index, argv in enumerate(commands[:1] if configure_only else commands):
+            stage = "configure" if index == 0 else "build"
+            values = {
+                "stage": stage,
+                "server": profile["id"],
+                "allocation": allocation["id"],
+            }
             lines.append(marker_line("build", server=profile["id"], argv=argv))
-            lines.append("if " + shlex.join(argv) + "; then :; else")
+            inner = (
+                marker_line("stage", status="RUNNING", **values)
+                + "\n"
+                + shlex.join(argv)
+            )
+            invocation = ["bash", "-c", inner]
+            if not batch and allocation["slurm"] is not None:
+                invocation = [
+                    "srun",
+                    "--nodes=1",
+                    "--ntasks=1",
+                    "--cpus-per-task=" + str(allocation["slurm"]["cpus_per_task"]),
+                    *invocation,
+                ]
+                lines.append(marker_line("stage", status="PENDING", **values))
+            lines.append("if " + shlex.join(invocation) + "; then")
+            lines.append(marker_line("stage", status="SUCCESS", **values))
+            lines.append("else")
+            lines.append(marker_line("stage", status="FAILURE", **values))
             lines.append(marker_line("build_failed", server=profile["id"]))
             lines.extend(["exit 1", "fi"])
     if build_only:
         return "\n".join([*lines, marker_line("built", server=profile["id"]), ""])
+    lines.append(
+        marker_line(
+            "stage",
+            stage="run",
+            status="PENDING",
+            server=profile["id"],
+            allocation=allocation["id"],
+        )
+    )
     lines.append("failures=0")
     for run in runs:
         values = {k: run[k] for k in ("id", "server", "parameters", "choices")}
@@ -615,8 +662,19 @@ def script(config, manifest, allocation, mode, batch):
                 "--cpus-per-task="
                 + str(allocation["batch_resources"]["cpus_per_task"]),
             ]
+        inner = (
+            marker_line(
+                "stage",
+                stage="run",
+                status="RUNNING",
+                server=profile["id"],
+                allocation=allocation["id"],
+            )
+            + "\nexec "
+            + shlex.join(run["argv"])
+        )
         lines.append(
-            shlex.join(["env", *env, *launcher, *run["argv"]])
+            shlex.join(["env", *env, *launcher, "bash", "-c", inner])
             + " 2>&1 | tee "
             + shlex.quote(run["folder"] + "/output.log")
         )
@@ -630,17 +688,42 @@ def script(config, manifest, allocation, mode, batch):
         )
         lines.append(
             'if [ "$code" -ne 0 ]; then failures=$((failures+1)); '
-            + ('exit "$code"; ' if manifest["stop_on_failure"] else "")
+            + (
+                marker_line(
+                    "stage",
+                    stage="run",
+                    status="FAILURE",
+                    server=profile["id"],
+                    allocation=allocation["id"],
+                )
+                + '; exit "$code"; '
+                if manifest["stop_on_failure"]
+                else ""
+            )
             + "fi"
         )
-    lines.append('[ "$failures" -eq 0 ]')
+    lines.append('if [ "$failures" -eq 0 ]; then')
+    lines.append(
+        marker_line(
+            "stage",
+            stage="run",
+            status="SUCCESS",
+            server=profile["id"],
+            allocation=allocation["id"],
+        )
+    )
+    lines.append("else")
+    lines.append(
+        marker_line(
+            "stage",
+            stage="run",
+            status="FAILURE",
+            server=profile["id"],
+            allocation=allocation["id"],
+        )
+    )
+    lines.extend(["exit 1", "fi"])
     return "\n".join([*lines, ""])
-
-
-def allocation_args(resources):
-    return [
-        "--" + RESOURCE_FLAGS[k] + "=" + str(v) for k, v in resources.items() if v != ""
-    ]
 
 
 def export(config, root, folder):
@@ -717,6 +800,7 @@ def source_config(config, root, manifest, connections):
         published = {}
         for profile in remote:
             context = {
+                "experiment": config["experiment_id"],
                 "build": config.get("build", {}),
                 "preset": config.get("preset", ""),
                 "target": config.get("target", ""),
@@ -798,6 +882,8 @@ class JobObserver:
                 job=self.entry["job"],
                 folder=self.entry["client_folder"],
                 **{k: state[k] for k in ("status", "terminal", "job_id", "exit_code")},
+                allocation_session=state.get("allocation_session"),
+                allocation_status=state.get("allocation_status"),
             )
         if state.get("observation_error") and state.get("observation_error") != old.get(
             "observation_error"
@@ -873,13 +959,23 @@ class ExecutionSession:
         for allocation in manifest["allocations"]:
             profile = allocation["profile"]
             job = uuid.uuid4().hex
-            launcher = (
-                ["salloc", *allocation_args(allocation["slurm"])]
-                if allocation["slurm"] is not None and mode != "submit"
-                else []
-            )
             request = {
                 "job": job,
+                "experiment": config["experiment_id"],
+                "stages": ["resources"]
+                + (
+                    ["configure"]
+                    + (
+                        ["build"]
+                        if mode != "configure"
+                        and len(config.get("build", {}).get("commands", [])) > 1
+                        else []
+                    )
+                    if mode in {"configure", "build"}
+                    or config.get("build", {}).get("before_run", False)
+                    else []
+                )
+                + (["run"] if mode in {"run", "submit"} else []),
                 "revision": profile.get("revision"),
                 "script": script(
                     prepared,
@@ -888,8 +984,13 @@ class ExecutionSession:
                     "run" if mode == "submit" else mode,
                     mode == "submit",
                 ),
-                "scheduler": "slurm" if mode == "submit" else "process",
-                "launcher": launcher,
+                "scheduler": (
+                    "slurm"
+                    if mode == "submit"
+                    else (
+                        "allocation" if allocation["slurm"] is not None else "process"
+                    )
+                ),
                 "setup": setup_lines(profile),
                 "resources": (
                     allocation["batch_resources"]
@@ -929,11 +1030,26 @@ class ExecutionSession:
             "entries": entries,
         }
         self.checkpoint()
-        emit("session", folder=str(self.folder), mode=mode)
+        self.announce()
+
+    def announce(self):
+        emit(
+            "session",
+            folder=str(self.folder),
+            mode=self.data["mode"],
+            allocations=[
+                {
+                    "id": entry["allocation"],
+                    "server": entry["server"],
+                    "stages": entry["request"].get("stages", ["resources"]),
+                }
+                for entry in self.data["entries"]
+            ],
+        )
 
     def restore(self):
         self.data = read(self.receipt)
-        emit("session", folder=str(self.folder), mode=self.data["mode"])
+        self.announce()
 
     def observer(self, entry):
         return JobObserver(
@@ -986,6 +1102,13 @@ class ExecutionSession:
         emit("cancel_requested")
         return 0
 
+    def cancel_and_follow(self):
+        self.cancel()
+        for entry in self.data["entries"]:
+            if entry["attempted"]:
+                self.follow(entry, False)
+        return 0
+
     def poll(self):
         for entry in self.data["entries"]:
             if entry["attempted"]:
@@ -1009,7 +1132,7 @@ def job_action(folder, action):
         session.restore()
         return {
             "poll": session.poll,
-            "cancel": session.cancel,
+            "cancel": session.cancel_and_follow,
             "reconnect": lambda: session.execute(False),
         }[action]()
 
@@ -1111,6 +1234,24 @@ def dispatch(args):
         manifest = export(config, root, folder)
         emit("exported", folder=str(folder), total=manifest["total"])
         return 0
+    if args.action in {"release", "resources"}:
+        profiles = plan(config, root, folder, False)["profiles"]
+        with ExecutionSession(folder) as session:
+            for profile in profiles:
+                states = session.connection(profile).request(
+                    (
+                        "allocations_release"
+                        if args.action == "release"
+                        else "allocations_observe"
+                    ),
+                    {"experiment": config["experiment_id"]},
+                )
+                if args.action == "release":
+                    emit("released", server=profile["id"], allocations=states)
+                else:
+                    for state in states:
+                        emit("allocation_state", server=profile["id"], **state)
+        return 0
     if args.action == "sync":
         return synchronize(config, root, folder)
     if args.action == "submit":
@@ -1138,6 +1279,8 @@ def main(argv):
             "log",
             "sync",
             "reconnect",
+            "release",
+            "resources",
         ],
     )
     parser.add_argument("config")

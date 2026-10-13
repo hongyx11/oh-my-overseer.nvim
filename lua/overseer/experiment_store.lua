@@ -158,14 +158,16 @@ function M.session(project, file)
   return value
 end
 
-function M.record_session(project, file, folder, mode)
+function M.update_session(project, file, values)
   local data = metadata(project)
   data.experiments = data.experiments or vim.empty_dict()
   local key = relative(project, file)
-  data.experiments[key] = data.experiments[key] or vim.empty_dict()
-  data.experiments[key].folder = relative(project, folder)
-  data.experiments[key].mode = mode
+  data.experiments[key] = vim.tbl_extend("force", data.experiments[key] or {}, values)
   M.write(project .. "/.overseer/state.json", data)
+end
+
+function M.record_session(project, file, folder, mode)
+  M.update_session(project, file, { folder = relative(project, folder), mode = mode })
 end
 
 function M.create(project, name, base)
@@ -185,6 +187,7 @@ function M.create(project, name, base)
       build = { directory = "build/overseer", commands = {}, before_run = false },
     }
   config.name, config.project = name, "../.."
+  config.experiment_id = nil
   M.write(file, config)
   M.activate(project, file)
   return file
