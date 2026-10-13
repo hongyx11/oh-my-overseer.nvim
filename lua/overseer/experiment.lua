@@ -1,11 +1,19 @@
+local store = require("overseer.experiment_store")
 local M = {}
 local states = {}
 local panels = {}
 local MARKER = "@@OVERSEER "
 local refresh
 local action
-local select_dimension
+local select_option
+local choose_experiment
+local new_experiment
+local modify_row
 local command
+
+local function display_text(value)
+  return tostring(value):gsub("\r", "\\r"):gsub("\n", "\\n")
+end
 
 local function root()
   return require("overseer.results").context_project()
@@ -24,7 +32,9 @@ local function panel_config(state)
     height = height,
     style = "minimal",
     border = opts.border,
-    title = " " .. (state.config.name or "Experiment") .. " · " .. state.status .. " ",
+    title = " " .. display_text(state.config.name or "Experiment") .. " · " .. display_text(
+      state.status
+    ) .. " ",
     title_pos = "center",
     zindex = 40,
   }
@@ -80,15 +90,11 @@ local function helper()
   )
 end
 
-local function config_path(project)
-  return project .. "/.overseer/experiment.json"
-end
-
-local function state_for(project)
-  if not states[project] then
-    states[project] = {
+local function state_for_file(project, file)
+  if not states[file] then
+    states[file] = {
       root = project,
-      file = config_path(project),
+      file = file,
       view = "config",
       runs = {},
       logs = {},
@@ -96,7 +102,11 @@ local function state_for(project)
       generation = 0,
     }
   end
-  return states[project]
+  return states[file]
+end
+
+local function state_for(project)
+  return state_for_file(project, store.active(project))
 end
 
 local function append_log(state, output)
@@ -104,55 +114,50 @@ local function append_log(state, output)
 end
 
 local function load(state)
-  state.config = require("overseer.files").load_json_file(state.file)
-  assert(state.config and state.config.version == 1, "Experiment config needs version 1")
+  state.config = store.read(state.file)
+  assert(
+    state.config and state.config.version == 2,
+    "Experiment needs parameter-list schema version 2"
+  )
   state.config.build = state.config.build or { directory = "build", commands = {} }
   state.config.preset = state.config.preset or ""
   state.config.target = state.config.target or ""
   state.config.binary = state.config.binary or ""
-  for _, dimension in ipairs({ "datasets", "threads", "methods", "servers" }) do
-    assert(
-      type(state.config[dimension]) == "table",
-      "Experiment needs " .. dimension .. ".choices and .selected"
-    )
-    state.config[dimension].choices = state.config[dimension].choices or {}
-    state.config[dimension].selected = state.config[dimension].selected or {}
-  end
+  state.config.parameters = state.config.parameters or {}
+  store.ensure_library()
+  local result = vim.system(command(state, "resolve", nil, nil), { text = true }):wait()
+  assert(result.code == 0, result.stdout or result.stderr)
+  state.resolved = vim.json.decode(result.stdout)
 end
 
 local function save(state)
-  vim.fn.mkdir(vim.fs.dirname(state.file), "p")
-  vim.fn.writefile({ vim.json.encode(state.config) }, state.file)
-  vim.fn.system({
-    require("overseer.config").experiment.python,
-    helper(),
-    "format",
-    state.file,
-    "--project",
-    state.root,
-  })
+  local valid, message = store.validate(state.config, state.root)
+  if not valid then
+    vim.notify(message, vim.log.levels.ERROR)
+    load(state)
+    return false
+  end
+  store.write(state.file, state.config)
+  return true
 end
 
-local function labels(config, dimension)
-  local items = config[dimension] or {}
-  local selected = items.selected or {}
-  local lookup = {}
-  for _, value in ipairs(items.choices or {}) do
-    if type(value) == "table" then
-      lookup[tostring(value.id)] = value.label or value.id
+local function labels(definition)
+  local lookup, values = {}, {}
+  for _, item in ipairs(definition.choices or {}) do
+    if type(item) == "table" then
+      lookup[tostring(item.id)] = item.label or item.id
     end
   end
-  local values = {}
-  for _, value in ipairs(selected) do
+  for _, value in ipairs(definition.selected or {}) do
     table.insert(values, tostring(lookup[tostring(value)] or value))
   end
   return #values == 0 and "(none selected)" or table.concat(values, ", ")
 end
 
 local function count(config)
-  local total = 1
-  for _, name in ipairs({ "datasets", "threads", "methods", "servers" }) do
-    total = total * #(config[name] and config[name].selected or {})
+  local total = #(config.servers and config.servers.selected or {})
+  for _, option in ipairs(config.parameters or {}) do
+    total = total * #(option.selected or {})
   end
   return total
 end
@@ -161,8 +166,8 @@ local function render(state)
   if not state.buf or not vim.api.nvim_buf_is_valid(state.buf) then
     return
   end
-  local config = state.config
-  state.run_rows = {}
+  local config = state.resolved or state.config
+  state.run_rows, state.rows = {}, {}
   local lines = {
     "EXPERIMENT · " .. (config.name or "Untitled"),
     (state.view == "config" and "[1 Config]" or " 1 Config ")
@@ -182,20 +187,45 @@ local function render(state)
   }
   local log_end
   if state.view == "config" then
-    vim.list_extend(lines, {
+    local function row(text, editor)
+      table.insert(lines, text)
+      state.rows[#lines] = editor
+    end
+    row(
+      "Experiment: " .. (config.name or "Untitled") .. "   [N new · O choose]",
+      { kind = "experiment" }
+    )
+    row(
       "Preset:  " .. (config.preset ~= "" and config.preset or "(not selected)"),
+      { kind = "preset" }
+    )
+    row(
       "Target:  " .. (config.target ~= "" and config.target or "(not selected)"),
+      { kind = "target" }
+    )
+    row(
       "Binary:  " .. (config.binary ~= "" and config.binary or "(choose a binary)"),
-      "",
-      "Datasets: " .. labels(config, "datasets"),
-      "Threads:  " .. labels(config, "threads"),
-      "Methods / variants: " .. labels(config, "methods"),
-      "Servers:  " .. labels(config, "servers"),
+      { kind = "binary" }
+    )
+    row("Arguments: " .. table.concat(config.args or {}, " "), { kind = "arguments" })
+    row("Servers: " .. labels(config.servers), { kind = "servers" })
+    table.insert(lines, "")
+    table.insert(lines, "OPTIONS · Enter / m modifies the highlighted row")
+    for index, option in ipairs(config.parameters or {}) do
+      local suffix = option.preset and "  [preset: " .. option.preset .. "]" or ""
+      row(
+        (option.label or option.id) .. " (${" .. option.id .. "}): " .. labels(option) .. suffix,
+        { kind = "parameter", index = index, id = option.id }
+      )
+    end
+    if #(config.parameters or {}) == 0 then
+      table.insert(lines, "No options yet · a adds an option from the library or creates one")
+    end
+    vim.list_extend(lines, {
       "",
       "Plan: " .. count(config) .. " runs, sequential",
       "Failure policy: "
         .. (config.stop_on_failure and "stop on first failure" or "continue remaining runs"),
-      "Arguments: " .. table.concat(config.args or {}, " "),
       "",
       "SERVER PROFILES",
     })
@@ -241,22 +271,25 @@ local function render(state)
       end
     end
   elseif state.view == "runs" then
-    table.insert(lines, "ID   STATE       SERVER / DATASET / THREADS / METHOD")
+    table.insert(lines, "ID   STATE       SERVER / OPTIONS")
     local runs = state.active_plan and state.active_plan.runs
       or state.plan and state.plan.runs
       or {}
     for _, spec in ipairs(runs) do
       local progress = state.runs[spec.id] or {}
+      local values = {}
+      local definition = state.active_plan or state.plan
+      for _, option in ipairs(definition and definition.parameters or {}) do
+        table.insert(values, option.id .. "=" .. tostring(spec.choices[option.id]))
+      end
       table.insert(
         lines,
         string.format(
-          "%04d %-11s %s / %s / %s / %s",
+          "%04d %-11s %s / %s",
           spec.id,
           progress.status or "PENDING",
           spec.server,
-          spec.dataset,
-          tostring(spec.threads),
-          spec.method
+          table.concat(values, " · ")
         )
       )
       state.run_rows[#lines] = spec.id
@@ -264,7 +297,13 @@ local function render(state)
     for _, job in pairs(state.jobs or {}) do
       table.insert(
         lines,
-        "Slurm " .. job.job_id .. " · " .. job.server .. " · " .. (job.status or "SUBMITTED")
+        "Slurm "
+          .. job.job_id
+          .. " · "
+          .. job.server
+          .. (job.slurm and job.slurm.nodes and " · nodes=" .. tostring(job.slurm.nodes) or "")
+          .. " · "
+          .. (job.status or "SUBMITTED")
       )
     end
   else
@@ -285,13 +324,14 @@ local function render(state)
   end
   vim.list_extend(lines, {
     "",
-    "p preset · T target · b binary · d datasets",
-    "t threads · m methods · h hosts / resources",
+    "Enter / m modify row · a add option · s option settings",
+    "N new experiment · O choose experiment · p preset · T target",
     "C configure · B build · r run sequentially",
     "w save · e edit JSON · E export · L load",
     "S submit Slurm · u refresh jobs · X cancel jobs",
     "x stop interactive run · Esc / q close · R reload",
   })
+  lines = vim.tbl_map(display_text, lines)
   local follow_requested = state.follow_logs
   state.follow_logs = nil
   state.log_end = log_end
@@ -318,7 +358,9 @@ local function render(state)
       vim.wo[panel.win].wrap = state.view ~= "logs"
       vim.wo[panel.win].linebreak = true
       vim.api.nvim_win_set_config(panel.win, {
-        title = " " .. (config.name or "Experiment") .. " · " .. state.status .. " ",
+        title = " " .. display_text(config.name or "Experiment") .. " · " .. display_text(
+          state.status
+        ) .. " ",
         title_pos = "center",
       })
     end
@@ -368,6 +410,8 @@ command = function(state, mode, folder, file)
     helper(),
     mode,
     file or state.file,
+    "--library",
+    store.library_path(),
     "--project",
     state.root,
   }
@@ -388,7 +432,7 @@ refresh = function(state)
       end
       if result.code == 0 then
         local data = vim.json.decode(result.stdout)
-        state.plan = data.plan
+        state.plan, state.resolved = data.plan, data.config
       else
         state.status = "CONFIG ERROR"
         append_log(state, (result.stdout or "") .. (result.stderr or ""))
@@ -400,8 +444,10 @@ end
 
 local function changed(state)
   state.generation = state.generation + 1
-  save(state)
-  refresh(state)
+  if save(state) then
+    load(state)
+    refresh(state)
+  end
   render(state)
 end
 
@@ -435,7 +481,7 @@ local function multi_select(title, items, selection, callback)
           ordinal = item.label or tostring(item.id),
           display = function()
             return (selected[tostring(item.id)] and "[x] " or "[ ] ")
-              .. (item.label or tostring(item.id))
+              .. display_text(item.label or item.id)
           end,
         }
       end,
@@ -489,34 +535,27 @@ local function multi_select(title, items, selection, callback)
   picker:find()
 end
 
-local function scan_datasets(state)
-  local directory = state.config.datasets.directory or "dataset/output"
+local function scan_files(state, definition)
+  local source = definition.source
+  local directory = source.directory
   if not require("overseer.files").is_absolute(directory) then
     directory = state.root .. "/" .. directory
   end
-  local values, names, old = {}, {}, {}
-  for _, item in ipairs(state.config.datasets.choices or {}) do
-    local path = item.path
-    if path then
-      if not require("overseer.files").is_absolute(path) then
-        path = state.root .. "/" .. path
-      end
-      old[vim.fs.normalize(path)] = item
+  local old, values = {}, {}
+  for _, choice in ipairs(definition.choices or {}) do
+    if choice.path then
+      local path = require("overseer.files").is_absolute(choice.path) and choice.path
+        or state.root .. "/" .. choice.path
+      old[vim.fs.normalize(path)] = choice
     end
   end
-  local paths = vim.fn.globpath(directory, "**/*.mtx", false, true)
-  for _, path in ipairs(paths) do
-    local name = vim.fn.fnamemodify(path, ":t:r")
-    names[name] = (names[name] or 0) + 1
-  end
-  for _, path in ipairs(paths) do
-    local name = vim.fn.fnamemodify(path, ":t:r")
-    local id = names[name] == 1 and name or path:sub(#directory + 2):gsub("%.mtx$", "")
+  for _, path in ipairs(vim.fn.globpath(directory, "**/" .. source.pattern, false, true)) do
     local relative = path:sub(1, #state.root + 1) == state.root .. "/" and path:sub(#state.root + 2)
       or path
-    local item = vim.deepcopy(old[vim.fs.normalize(path)] or { id = id, label = id })
-    item.path = relative
-    table.insert(values, item)
+    local name = path:sub(#directory + 2):gsub("%.[^%.]+$", "")
+    local choice = vim.deepcopy(old[vim.fs.normalize(path)] or { id = name, label = name })
+    choice.path = relative
+    table.insert(values, choice)
   end
   table.sort(values, function(a, b)
     return a.id < b.id
@@ -524,26 +563,34 @@ local function scan_datasets(state)
   return values
 end
 
-select_dimension = function(state, dimension)
-  if dimension == "datasets" then
-    local values = scan_datasets(state)
-    if #values > 0 then
-      local old = {}
-      for _, item in ipairs(state.config.datasets.choices or {}) do
-        old[tostring(item.id)] = item
-      end
-      for _, item in ipairs(values) do
-        item.paths = old[item.id] and old[item.id].paths or nil
-      end
-      state.config.datasets.choices = values
+select_option = function(state, index)
+  local definition = state.resolved.parameters[index]
+  local option = state.config.parameters[index]
+  local choices = definition.choices
+  if definition.source then
+    local files = scan_files(state, definition)
+    if #files > 0 then
+      option.choices, choices = files, files
     end
   end
   multi_select(
-    dimension,
-    entries(state.config[dimension].choices),
-    state.config[dimension].selected,
+    definition.label or definition.id,
+    entries(choices),
+    definition.selected,
     function(values)
-      state.config[dimension].selected = values
+      option.selected, option.preset = values, nil
+      changed(state)
+    end
+  )
+end
+
+local function select_servers(state)
+  multi_select(
+    "Servers / resources",
+    entries(state.config.servers.choices),
+    state.config.servers.selected,
+    function(values)
+      state.config.servers.selected = values
       changed(state)
     end
   )
@@ -628,6 +675,101 @@ local function preset(state)
   end, state.root)
 end
 
+choose_experiment = function(state)
+  vim.ui.select(store.list(state.root), {
+    prompt = "Experiment:",
+    format_item = function(item)
+      return item.label
+    end,
+  }, function(item)
+    if item then
+      M.open_file(state.root, item.file, true)
+    end
+  end)
+end
+
+new_experiment = function(state)
+  vim.ui.input({ prompt = "New experiment name: " }, function(name)
+    if not name or name == "" then
+      return
+    end
+    vim.ui.select(
+      { "Copy current settings", "Start empty" },
+      { prompt = "New experiment:" },
+      function(choice)
+        if not choice then
+          return
+        end
+        local ok, file = pcall(
+          store.create,
+          state.root,
+          name,
+          choice == "Copy current settings" and state.config or nil
+        )
+        if ok then
+          M.open_file(state.root, file, true)
+        else
+          vim.notify(file, vim.log.levels.ERROR)
+        end
+      end
+    )
+  end)
+end
+
+modify_row = function(state)
+  local line = vim.api.nvim_win_get_cursor(0)[1]
+  if state.run_rows[line] then
+    run_log(state, state.run_rows[line])
+    return
+  end
+  local row = state.rows[line]
+  if not row then
+    vim.notify("Move to a configuration or option row and press Enter", vim.log.levels.INFO)
+    return
+  end
+  local editors = {
+    parameter = function()
+      select_option(state, row.index)
+    end,
+    preset = function()
+      preset(state)
+    end,
+    target = function()
+      choose_target(state)
+    end,
+    binary = function()
+      choose_binary(state)
+    end,
+    servers = function()
+      select_servers(state)
+    end,
+    experiment = function()
+      choose_experiment(state)
+    end,
+    arguments = function()
+      local current = vim.tbl_map(vim.fn.shellescape, state.config.args or {})
+      vim.ui.input({
+        prompt = "Program arguments (quotes group spaces): ",
+        default = table.concat(current, " "),
+      }, function(text)
+        if not text then
+          return
+        end
+        local argv = command(state, "parse-args", nil, nil)
+        table.insert(argv, "--text=" .. text)
+        local result = vim.system(argv, { text = true }):wait()
+        if result.code ~= 0 then
+          vim.notify(result.stdout or result.stderr, vim.log.levels.ERROR)
+          return
+        end
+        state.config.args = vim.json.decode(result.stdout)
+        changed(state)
+      end)
+    end,
+  }
+  editors[row.kind]()
+end
+
 local function process_event(state, event)
   if event.event == "start" then
     state.runs[event.id] = vim.tbl_extend("force", event, { status = "RUNNING" })
@@ -642,19 +784,21 @@ local function process_event(state, event)
   elseif event.event == "submitted" or event.event == "job" then
     if event.folder then
       state.job_folder = event.folder
-      vim.fn.writefile(
-        { vim.json.encode({ jobs_folder = event.folder }) },
-        state.root .. "/.overseer/state.json"
-      )
+      store.record_jobs(state.root, state.file, event.folder)
     end
     state.jobs = state.jobs or {}
-    state.jobs[event.server] =
-      { server = event.server, job_id = event.job_id, status = event.status or "SUBMITTED" }
+    local key = event.allocation or event.server
+    local job = state.jobs[key] or {}
+    job.server, job.job_id, job.status = event.server, event.job_id, event.status or "SUBMITTED"
+    job.slurm = event.slurm or job.slurm
+    state.jobs[key] = job
     state.status = "Slurm " .. (event.status or "SUBMITTED")
   elseif event.event == "exported" then
     state.status = "Exported " .. event.total .. " runs"
   elseif event.event == "allocation" then
-    state.status = "Waiting for Slurm allocation · " .. event.server
+    state.status = "Waiting for Slurm allocation · "
+      .. event.server
+      .. (event.slurm and event.slurm.nodes and " · nodes=" .. tostring(event.slurm.nodes) or "")
   elseif event.event == "build" then
     local configuring = state.task and state.task.metadata.experiment_mode == "configure"
     state.status = (configuring and "Configuring · " or "Building · ") .. event.server
@@ -698,16 +842,14 @@ action = function(state, mode, override)
   end
   load(state)
   save(state)
-  local config = override or state.config
+  local config = override or state.resolved
   state.generation = state.generation + 1
   if mode ~= "poll" and mode ~= "cancel" then
-    state.folder = state.root
-      .. "/"
-      .. (config.output_dir or "results/overseer")
-      .. "/"
-      .. os.date("%Y%m%d-%H%M%S")
-      .. "-"
-      .. vim.uv.hrtime()
+    local directory = config.output_dir or "results/overseer"
+    if not require("overseer.files").is_absolute(directory) then
+      directory = state.root .. "/" .. directory
+    end
+    state.folder = directory .. "/" .. os.date("%Y%m%d-%H%M%S") .. "-" .. vim.uv.hrtime()
   elseif not state.job_folder or vim.fn.filereadable(state.job_folder .. "/jobs.json") == 0 then
     vim.notify("No submitted Slurm jobs for this experiment", vim.log.levels.INFO)
     return
@@ -749,6 +891,7 @@ action = function(state, mode, override)
       results_output = true,
       experiment_config = snapshot,
       experiment_mode = mode,
+      experiment_source = state.file,
     },
   })
   state.task = task
@@ -817,16 +960,28 @@ local function map_panel(state)
     end)
   end
   map("<CR>", function()
-    local id = state.run_rows[vim.api.nvim_win_get_cursor(0)[1]]
-    if id then
-      run_log(state, id)
+    modify_row(state)
+  end)
+  map("m", function()
+    modify_row(state)
+  end)
+  map("a", function()
+    require("overseer.experiment_options").add(state, changed)
+  end)
+  map("s", function()
+    local row = state.rows[vim.api.nvim_win_get_cursor(0)[1]]
+    if row and row.kind == "parameter" then
+      require("overseer.experiment_options").settings(state, row.index, changed)
+    else
+      vim.notify("Place the cursor on an option row first", vim.log.levels.INFO)
     end
   end)
-  for key, dimension in pairs({ d = "datasets", t = "threads", m = "methods", h = "servers" }) do
-    map(key, function()
-      select_dimension(state, dimension)
-    end)
-  end
+  map("N", function()
+    new_experiment(state)
+  end)
+  map("O", function()
+    choose_experiment(state)
+  end)
   for key, mode in pairs({
     C = "configure",
     B = "build",
@@ -875,30 +1030,26 @@ local function map_panel(state)
   map("L", function()
     vim.ui.input({ prompt = "Experiment JSON: ", completion = "file" }, function(path)
       if path and path ~= "" then
-        state.file = vim.fn.fnamemodify(path, ":p")
-        load(state)
-        changed(state)
+        M.open_file(state.root, vim.fn.fnamemodify(path, ":p"), true)
       end
     end)
   end)
 end
 
 function M.exists(project)
-  return vim.fn.filereadable(config_path(project or root())) == 1
+  return vim.fn.filereadable(store.active(project or root())) == 1
 end
 
-function M.open(project, focus)
-  local state = state_for(project or root())
+local function open_state(state, focus)
   load(state)
-  if not state.job_folder and vim.fn.filereadable(state.root .. "/.overseer/state.json") == 1 then
-    state.job_folder =
-      require("overseer.files").load_json_file(state.root .. "/.overseer/state.json").jobs_folder
+  if not state.job_folder then
+    state.job_folder = store.session(state.root, state.file).jobs_folder
     if state.job_folder and vim.fn.filereadable(state.job_folder .. "/jobs.json") == 1 then
       state.jobs = {}
       for _, job in
         ipairs(require("overseer.files").load_json_file(state.job_folder .. "/jobs.json"))
       do
-        state.jobs[job.server] = job
+        state.jobs[job.allocation] = job
       end
     end
   end
@@ -947,6 +1098,15 @@ function M.open(project, focus)
   return state
 end
 
+function M.open(project, focus)
+  return open_state(state_for(project or root()), focus)
+end
+
+function M.open_file(project, file, focus)
+  store.activate(project, file)
+  return open_state(state_for_file(project, file), focus)
+end
+
 function M.toggle()
   local state = state_for(root())
   local panel = panel_for()
@@ -958,7 +1118,7 @@ function M.toggle()
 end
 
 function M.show(task, focus, automatic)
-  local state = state_for(task.cwd)
+  local state = state_for_file(task.cwd, task.metadata.experiment_source)
   local panel = panel_for()
   if automatic and task:is_running() and (not panel or panel.state ~= state) then
     return
@@ -966,7 +1126,7 @@ function M.show(task, focus, automatic)
   if task.status == "FAILURE" then
     state.view = "logs"
   end
-  M.open(state.root, focus)
+  open_state(state, focus)
 end
 
 function M.run()
@@ -975,7 +1135,7 @@ function M.run()
 end
 
 function M.rerun(task)
-  local state = M.open(task.cwd, true)
+  local state = open_state(state_for_file(task.cwd, task.metadata.experiment_source), true)
   local snapshot = require("overseer.files").load_json_file(task.metadata.experiment_config)
   action(state, task.metadata.experiment_mode or "run", snapshot)
 end
@@ -985,23 +1145,17 @@ function M.init()
   local state = state_for(project)
   if not M.exists(project) then
     state.config = {
-      version = 1,
+      version = 2,
       name = "Experiment",
       project = "..",
-      preset = "",
-      target = "",
       binary = "",
-      args = { "${dataset}", "${threads}", "${method}" },
-      environment = { OMP_NUM_THREADS = "${threads}" },
-      datasets = { directory = "dataset/output", choices = {}, selected = {} },
-      threads = { choices = { 1, 2, 4, 8 }, selected = { 1, 2, 4 } },
-      methods = { choices = { "a", "b", "c" }, selected = { "a" } },
+      args = {},
+      parameters = {},
       servers = { choices = { { id = "local", kind = "local" } }, selected = { "local" } },
       output_dir = "results/overseer",
-      stop_on_failure = false,
       build = { directory = "build/overseer", commands = {}, before_run = false },
     }
-    state.config.datasets.choices = scan_datasets(state)
+    store.ensure_library()
     save(state)
   end
   M.open(project, true)

@@ -60,11 +60,116 @@ def merge(base, child):
     return result
 
 
-def load_config(path, project=None):
+def choice_entries(values):
+    entries = [
+        {"id": str(v), "value": v} if not isinstance(v, dict) else copy.deepcopy(v)
+        for v in values
+    ]
+    ids = [str(v["id"]) for v in entries]
+    if len(set(ids)) != len(ids):
+        raise ValueError("Duplicate option choice IDs")
+    for entry in entries:
+        entry["id"] = str(entry["id"])
+    return entries
+
+
+def selected_entries(option):
+    lookup = {v["id"]: v for v in choice_entries(option.get("choices", []))}
+    result = []
+    for name in option.get("selected", []):
+        key = str(name)
+        if key not in lookup:
+            raise ValueError("Unknown selection for " + option["id"] + ": " + key)
+        if key not in [v["id"] for v in result]:
+            result.append(lookup[key])
+    return result
+
+
+def resolve_config(source, library):
+    if source.get("version") != 2:
+        raise ValueError("Experiment must use the parameter-list schema (version 2)")
+    config = copy.deepcopy(source)
+    for field in ("args", "launcher"):
+        if field in config and (
+            not isinstance(config[field], list)
+            or any(not isinstance(v, (str, int, float)) for v in config[field])
+        ):
+            raise ValueError(field + " must be an array of argument values")
+    parameters, ids = [], set()
+    reserved = {
+        "project",
+        "server",
+        "run_id",
+        "result",
+        "run_dir",
+        "preset",
+        "target",
+        "value",
+    }
+    for reference in config.get("parameters", []):
+        name = reference["id"]
+        if (
+            not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name)
+            or name in ids
+            or name in reserved
+        ):
+            raise ValueError("Invalid, reserved, or duplicate option ID: " + name)
+        ids.add(name)
+        template = reference.get("template")
+        if template and template not in library.get("options", {}):
+            raise ValueError("Unknown shared option: " + template)
+        option = merge(library.get("options", {}).get(template, {}), reference)
+        for field in ("presets", "environment", "slurm", "requirements"):
+            if field in reference:
+                option[field] = copy.deepcopy(reference[field])
+        option.pop("template", None)
+        if option.get("reserved_id") and name != option["reserved_id"]:
+            raise ValueError("This option name is reserved: " + option["reserved_id"])
+        if "source" in option and not all(
+            isinstance(option["source"].get(k), str) and option["source"][k]
+            for k in ("directory", "pattern")
+        ):
+            raise ValueError("File options require source.directory and source.pattern")
+        option["choices"] = choice_entries(option.get("choices", []))
+        preset = option.get("preset")
+        if preset and preset not in option.get("presets", {}):
+            raise ValueError("Unknown preset for " + name + ": " + preset)
+        if "selected" not in reference:
+            option["selected"] = option.get("presets", {}).get(preset, [])
+        selected_entries(option)
+        for saved in option.get("presets", {}).values():
+            selected_entries({**option, "selected": saved})
+        if "nodes" in option.get("slurm", {}) and name != "nodes":
+            raise ValueError("Slurm nodes must use the reserved option name nodes")
+        if name == "nodes":
+            if option.get("slurm", {}).get("nodes") != "${value}" or option.get("args"):
+                raise ValueError(
+                    "nodes is reserved for Slurm requests; bind slurm.nodes to ${value}"
+                )
+            for choice in option["choices"]:
+                if choice.get("args") or choice.get("arguments") or "path" in choice:
+                    raise ValueError("Slurm nodes choices contain node counts only")
+                value = choice.get("value", choice["id"])
+                if (
+                    isinstance(value, bool)
+                    or not str(value).isdigit()
+                    or int(value) < 1
+                ):
+                    raise ValueError("Slurm node counts must be positive integers")
+        parameters.append(option)
+    config["parameters"] = parameters
+    return config
+
+
+def load_config(path, project, library_path):
     path = Path(path).resolve()
-    config = read(path)
-    if config.get("version") != 1:
-        raise ValueError("Experiment version must be 1")
+    source = read(path)
+    library = (
+        read(library_path)
+        if library_path and Path(library_path).is_file()
+        else {"options": {}}
+    )
+    config = resolve_config(source, library)
     root = (
         Path(project).resolve()
         if project
@@ -73,36 +178,16 @@ def load_config(path, project=None):
     return config, root
 
 
-def choices(config, dimension):
-    values = config.get(dimension, {}).get("choices", [])
-    entries = [
-        {"id": str(v), "value": v} if not isinstance(v, dict) else copy.deepcopy(v)
-        for v in values
-    ]
-    ids = [v["id"] for v in entries]
-    if len(set(ids)) != len(ids):
-        raise ValueError(f"Duplicate {dimension} IDs")
-    return entries
-
-
-def selected(config, dimension):
-    lookup = {v["id"]: v for v in choices(config, dimension)}
-    result = []
-    for name in config.get(dimension, {}).get("selected", []):
-        key = str(name)
-        if key not in lookup:
-            raise ValueError(f"Unknown {dimension} selection: {key}")
-        if key not in [v["id"] for v in result]:
-            result.append(lookup[key])
-    return result
-
-
 def server_profiles(config):
-    lookup = {v["id"]: v for v in choices(config, "servers")}
+    lookup = {
+        v["id"]: v for v in choice_entries(config.get("servers", {}).get("choices", []))
+    }
 
-    def resolve(name, parents=()):
+    def resolve(name, parents):
         if name in parents:
             raise ValueError("Server inheritance cycle: " + name)
+        if name not in lookup:
+            raise ValueError("Unknown server profile: " + name)
         own = lookup[name]
         base = resolve(own["extends"], (*parents, name)) if own.get("extends") else {}
         profile = merge(base, own)
@@ -110,19 +195,19 @@ def server_profiles(config):
         profile["parents"] = [name, *base.get("parents", [])]
         return profile
 
-    return [resolve(v["id"]) for v in selected(config, "servers")]
+    return [
+        resolve(str(name), ()) for name in config.get("servers", {}).get("selected", [])
+    ]
 
 
 def expand(value, variables):
-    text = str(value)
-
     def replace(match):
         key = match.group(1)
         if key not in variables:
             raise ValueError("Unknown experiment placeholder: " + key)
         return str(variables[key])
 
-    return re.sub(r"\$\{([\w_]+)\}", replace, text)
+    return re.sub(r"\$\{([\w_]+)\}", replace, str(value))
 
 
 def path_on_server(path, root, profile):
@@ -133,7 +218,7 @@ def path_on_server(path, root, profile):
     )
 
 
-def validate_profile(profile, threads):
+def validate_profile(profile, resources, cpus):
     if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]*", profile["id"]):
         raise ValueError("Server IDs must be safe file names")
     if profile.get("enabled", True) is False:
@@ -144,49 +229,51 @@ def validate_profile(profile, threads):
         host = profile.get("host", "")
         if not host or host.startswith("-") or any(c.isspace() for c in host):
             raise ValueError("Set a valid SSH host for " + profile["id"])
-        if not profile.get("project_dir"):
-            raise ValueError("Set the remote project_dir for " + profile["id"])
-        if not Path(profile["project_dir"]).is_absolute():
-            raise ValueError("The remote project_dir must be an absolute server path")
-    resources = profile.get("slurm", {})
-    if int(resources.get("ntasks", 1)) != 1:
-        raise ValueError(
-            "Sequential experiments use ntasks=1; configure a program launcher for MPI"
-        )
+        if (
+            not profile.get("project_dir")
+            or not Path(profile["project_dir"]).is_absolute()
+        ):
+            raise ValueError("Set an absolute remote project_dir for " + profile["id"])
+    if resources is None:
+        return
     unknown = set(resources) - set(RESOURCE_FLAGS)
     if unknown:
         raise ValueError("Unknown Slurm resource fields: " + ", ".join(sorted(unknown)))
-    for value in resources.values():
-        if "\n" in str(value) or "\r" in str(value):
-            raise ValueError("Slurm resource values must occupy one line")
-    if resources.get("cpus_per_task") and int(resources["cpus_per_task"]) < max(
-        threads, default=1
-    ):
-        raise ValueError("cpus_per_task is smaller than the selected thread count")
+    if any("\n" in str(v) or "\r" in str(v) for v in resources.values()):
+        raise ValueError("Slurm resource values must occupy one line")
+    for key in ("nodes", "ntasks", "cpus_per_task"):
+        value = resources.get(key, 1)
+        if not str(value).isdigit() or int(value) < 1:
+            raise ValueError(key + " must be a positive integer")
+    if int(resources.get("cpus_per_task", cpus)) < cpus:
+        raise ValueError("cpus_per_task is smaller than the selected CPU requirement")
 
 
-def plan(config, root, output_dir, validate=True):
+def option_value(option, choice, root, profile):
+    value = choice.get("value", choice["id"])
+    if "path" in choice:
+        value = choice["path"]
+        for name in profile["parents"]:
+            if name in choice.get("paths", {}):
+                value = choice["paths"][name]
+                break
+        value = path_on_server(value, root, profile)
+    return value
+
+
+def plan(config, root, output_dir, validate):
     profiles = server_profiles(config)
-    datasets = selected(config, "datasets")
-    thread_entries = selected(config, "threads")
-    threads = [int(v.get("value", v["id"])) for v in thread_entries]
-    methods = selected(config, "methods")
-    if any(v < 1 for v in threads):
-        raise ValueError("Thread counts must be positive")
-    if validate and not all((profiles, datasets, threads, methods)):
-        raise ValueError(
-            "Select at least one server, dataset, thread count, and method"
-        )
-    runs = []
+    options = config.get("parameters", [])
+    selections = [selected_entries(option) for option in options]
+    if validate and (not profiles or any(not items for items in selections)):
+        raise ValueError("Select a server and at least one value for each option")
+    runs, allocations = [], []
     for profile in profiles:
-        if validate:
-            validate_profile(profile, threads)
-        project = (
+        profile["project_dir"] = (
             str(root)
             if profile.get("kind", "local") == "local"
             else profile.get("project_dir", "")
         )
-        profile["project_dir"] = project
         server_output = (
             str(Path(output_dir).resolve())
             if profile.get("kind", "local") == "local"
@@ -198,65 +285,139 @@ def plan(config, root, output_dir, validate=True):
                 profile,
             )
         )
-        for dataset, thread, method in itertools.product(datasets, threads, methods):
+        groups = {}
+        for combination in itertools.product(*selections):
             number = len(runs) + 1
-            dataset_path = dataset.get("path", "")
-            for profile_name in profile.get("parents", [profile["id"]]):
-                if profile_name in dataset.get("paths", {}):
-                    dataset_path = dataset["paths"][profile_name]
-                    break
-            dataset_path = path_on_server(dataset_path, root, profile)
             folder = str(Path(server_output) / f"{number:04d}")
+            parameters = {
+                option["id"]: option_value(option, choice, root, profile)
+                for option, choice in zip(options, combination)
+            }
             variables = {
-                "project": project,
-                "dataset": dataset_path,
-                "dataset_id": dataset["id"],
-                "threads": thread,
-                "method": method.get("value", method["id"]),
+                "project": profile["project_dir"],
                 "server": profile["id"],
                 "run_id": f"{number:04d}",
                 "result": folder + "/result.json",
                 "run_dir": folder,
                 "preset": config.get("preset", ""),
                 "target": config.get("target", ""),
+                **parameters,
             }
-            binary = method.get("binaries", {}).get(
-                profile["id"],
-                method.get("binary", profile.get("binary", config.get("binary", ""))),
-            )
-            if validate and not binary:
-                raise ValueError("Choose an executable binary")
-            binary = path_on_server(expand(binary, variables), root, profile)
-            arguments = method.get(
-                "arguments", profile.get("arguments", config.get("args", []))
-            )
-            args = [expand(v, variables) for v in [*arguments, *method.get("args", [])]]
-            env = {
+            binary = profile.get("binary", config.get("binary", ""))
+            arguments = profile.get("arguments", config.get("args", []))
+            launcher = profile.get("launcher", config.get("launcher", []))
+            extra = []
+            environment = {
                 **config.get("environment", {}),
                 **profile.get("environment", {}),
-                **method.get("environment", {}),
             }
-            env = {str(k): expand(v, variables) for k, v in env.items()}
-            for key in env:
-                if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", key):
-                    raise ValueError("Invalid environment variable name: " + key)
-            runs.append(
-                {
-                    "id": number,
+            resources = copy.deepcopy(profile.get("slurm"))
+            cpus = 1
+            for option, choice in zip(options, combination):
+                local = {**variables, "value": parameters[option["id"]]}
+                binary = choice.get("binary", binary)
+                for name in profile["parents"]:
+                    if name in choice.get("binaries", {}):
+                        binary = choice["binaries"][name]
+                        break
+                arguments = choice.get("arguments", arguments)
+                launcher = choice.get("launcher", launcher)
+                extra.extend(
+                    expand(v, local)
+                    for v in [*option.get("args", []), *choice.get("args", [])]
+                )
+                environment.update(
+                    {
+                        k: expand(v, local)
+                        for k, v in {
+                            **option.get("environment", {}),
+                            **choice.get("environment", {}),
+                        }.items()
+                    }
+                )
+                cpus = max(
+                    cpus,
+                    int(expand(option.get("requirements", {}).get("cpus", 1), local)),
+                )
+                binding = {**option.get("slurm", {}), **choice.get("slurm", {})}
+                if binding:
+                    if validate and "slurm" not in profile:
+                        raise ValueError(
+                            "Option "
+                            + option["id"]
+                            + " requests Slurm resources; select a Slurm server profile"
+                        )
+                    resources = {
+                        **(resources or {}),
+                        **{k: expand(v, local) for k, v in binding.items()},
+                    }
+            if cpus < 1:
+                raise ValueError("CPU requirements must be positive")
+            if validate and not binary:
+                raise ValueError("Choose an executable binary")
+            environment = {str(k): expand(v, variables) for k, v in environment.items()}
+            if any(not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", k) for k in environment):
+                raise ValueError("Invalid environment variable name")
+            run = {
+                "id": number,
+                "server": profile["id"],
+                "parameters": parameters,
+                "choices": {
+                    option["id"]: choice["id"]
+                    for option, choice in zip(options, combination)
+                },
+                "argv": [
+                    path_on_server(expand(binary, variables), root, profile),
+                    *[expand(v, variables) for v in arguments],
+                    *extra,
+                ],
+                "launcher": [expand(v, variables) for v in launcher],
+                "cwd": profile["project_dir"],
+                "environment": environment,
+                "folder": folder,
+                "required_cpus": cpus,
+            }
+            runs.append(run)
+            key = json.dumps(resources, sort_keys=True)
+            if key not in groups:
+                groups[key] = {
                     "server": profile["id"],
-                    "dataset": dataset["id"],
-                    "threads": thread,
-                    "method": method["id"],
-                    "argv": [binary, *args],
-                    "cwd": project,
-                    "environment": env,
-                    "folder": folder,
+                    "profile": profile,
+                    "slurm": resources,
+                    "run_ids": [],
                 }
+            groups[key]["run_ids"].append(number)
+        if not groups:
+            groups["empty"] = {
+                "server": profile["id"],
+                "profile": profile,
+                "slurm": profile.get("slurm"),
+                "run_ids": [],
+            }
+        for index, allocation in enumerate(groups.values(), 1):
+            allocation["id"] = (
+                profile["id"] if len(groups) == 1 else profile["id"] + f"--{index:03d}"
             )
+            cpus = max(
+                (r["required_cpus"] for r in runs if r["id"] in allocation["run_ids"]),
+                default=1,
+            )
+            if allocation["slurm"] is not None:
+                allocation["slurm"].setdefault("cpus_per_task", cpus)
+                allocation["slurm"].setdefault(
+                    "ntasks", int(allocation["slurm"].get("nodes", 1))
+                )
+            if validate:
+                validate_profile(profile, allocation["slurm"], cpus)
+            allocations.append(allocation)
     return {
-        "version": 1,
+        "version": 2,
         "name": config.get("name", "Experiment"),
         "profiles": profiles,
+        "parameters": [
+            {"id": o["id"], "label": o.get("label", o["id"])} for o in options
+        ],
+        "allocations": allocations,
         "runs": runs,
         "total": len(runs),
         "stop_on_failure": config.get("stop_on_failure", False),
@@ -281,17 +442,14 @@ def build_commands(config, profile):
     return [[expand(v, variables) for v in argv] for argv in build.get("commands", [])]
 
 
-def script(
-    config, manifest, profile, build_only=False, batch=False, configure_only=False
-):
-    runs = [r for r in manifest["runs"] if r["server"] == profile["id"]]
+def script(config, manifest, allocation, mode, batch):
+    profile = allocation["profile"]
+    build_only = mode in {"build", "configure"}
+    configure_only = mode == "configure"
+    runs = [r for r in manifest["runs"] if r["id"] in allocation["run_ids"]]
     lines = ["#!/usr/bin/env bash"]
     if batch:
-        resources = dict(profile.get("slurm", {}))
-        resources.setdefault(
-            "cpus_per_task", max((r["threads"] for r in runs), default=1)
-        )
-        resources.setdefault("ntasks", 1)
+        resources = allocation["slurm"] or {"ntasks": 1, "cpus_per_task": 1}
         for key, value in resources.items():
             if value != "":
                 lines.append(
@@ -331,7 +489,7 @@ def script(
         return "\n".join([*lines, marker_line("built", server=profile["id"]), ""])
     lines.append("failures=0")
     for run in runs:
-        values = {k: run[k] for k in ("id", "server", "dataset", "threads", "method")}
+        values = {k: run[k] for k in ("id", "server", "parameters", "choices")}
         lines.extend(
             [
                 "mkdir -p " + shlex.quote(run["folder"]) + " || exit 1",
@@ -339,8 +497,16 @@ def script(
             ]
         )
         env = [k + "=" + str(v) for k, v in run["environment"].items()]
+        launcher = run["launcher"]
+        if not launcher and allocation["slurm"] is not None:
+            launcher = [
+                "srun",
+                "--nodes=1",
+                "--ntasks=1",
+                "--cpus-per-task=" + str(allocation["slurm"]["cpus_per_task"]),
+            ]
         lines.append(
-            shlex.join(["env", *env, *run["argv"]])
+            shlex.join(["env", *env, *launcher, *run["argv"]])
             + " 2>&1 | tee "
             + shlex.quote(run["folder"] + "/output.log")
         )
@@ -361,7 +527,7 @@ def script(
     return "\n".join([*lines, ""])
 
 
-def ssh(profile, command, tty=False):
+def ssh(profile, command, tty):
     return [
         "ssh",
         "-tt" if tty else "-T",
@@ -373,10 +539,7 @@ def ssh(profile, command, tty=False):
     ]
 
 
-def allocation_args(profile, runs):
-    resources = dict(profile.get("slurm", {}))
-    resources.setdefault("cpus_per_task", max((r["threads"] for r in runs), default=1))
-    resources.setdefault("ntasks", 1)
+def allocation_args(resources):
     return [
         "--" + RESOURCE_FLAGS[k] + "=" + str(v) for k, v in resources.items() if v != ""
     ]
@@ -424,27 +587,36 @@ def export(config, root, folder):
     saved = copy.deepcopy(config)
     saved["project"] = os.path.relpath(root, folder)
     write(folder / "experiment.json", saved)
-    manifest = plan(config, root, folder)
+    manifest = plan(config, root, folder, True)
     write(folder / "manifest.json", manifest)
     if Path(__file__).resolve() != (folder / "runner.py").resolve():
         shutil.copyfile(__file__, folder / "runner.py")
-    for profile in manifest["profiles"]:
-        text = script(config, manifest, profile, batch=True)
-        (folder / (profile["id"] + ".sbatch")).write_text(text)
+    for allocation in manifest["allocations"]:
+        text = script(config, manifest, allocation, "run", True)
+        (folder / (allocation["id"] + ".sbatch")).write_text(text)
     return manifest
 
 
-def run(config, root, folder, build_only=False, configure_only=False):
+def run(config, root, folder, mode):
     folder.mkdir(parents=True, exist_ok=True)
-    manifest = plan(config, root, folder, validate=not build_only)
-    if build_only:
-        threads = [int(v.get("value", v["id"])) for v in selected(config, "threads")]
-        for profile in manifest["profiles"]:
-            validate_profile(profile, threads)
+    manifest = plan(config, root, folder, mode == "run")
+    for allocation in manifest["allocations"]:
+        cpus = max(
+            (
+                r["required_cpus"]
+                for r in manifest["runs"]
+                if r["id"] in allocation["run_ids"]
+            ),
+            default=1,
+        )
+        if allocation["slurm"] is not None and "slurm" not in allocation["profile"]:
+            raise ValueError("Select a Slurm server profile for resource options")
+        validate_profile(allocation["profile"], allocation["slurm"], cpus)
     write(folder / "manifest.json", manifest)
-    results = []
+    results, events = [], []
 
     def record(event):
+        events.append(event)
         if event.get("event") == "finish":
             results.append(event)
             write(
@@ -457,32 +629,42 @@ def run(config, root, folder, build_only=False, configure_only=False):
             )
 
     code = 0
-    for profile in manifest["profiles"]:
-        text = script(
-            config,
-            manifest,
-            profile,
-            build_only=build_only,
-            configure_only=configure_only,
-        )
-        remote = shlex.join(["bash", "-lc", text])
+    for allocation in manifest["allocations"]:
+        profile = allocation["profile"]
+        text = script(config, manifest, allocation, mode, False)
         argv = ["bash", "-c", text]
-        if "slurm" in profile:
-            emit("allocation", server=profile["id"])
+        if allocation["slurm"] is not None:
+            emit(
+                "allocation",
+                server=profile["id"],
+                allocation=allocation["id"],
+                slurm=allocation["slurm"],
+            )
             argv = [
-                "srun",
-                *allocation_args(profile, manifest["runs"]),
+                "salloc",
+                *allocation_args(allocation["slurm"]),
                 "bash",
                 "-lc",
                 text,
             ]
-            remote = shlex.join(argv)
         if profile.get("kind") == "ssh":
-            argv = ssh(profile, remote, tty=True)
-        emit("server", server=profile["id"])
-        status = execute(argv, record, folder / (profile["id"] + ".log"))
-        code = max(code, int(status != 0))
-        if status and manifest["stop_on_failure"]:
+            argv = ssh(profile, shlex.join(argv), True)
+        emit("server", server=profile["id"], allocation=allocation["id"])
+        previous_runs, previous_events = len(results), len(events)
+        status = execute(argv, record, folder / (allocation["id"] + ".log"))
+        new_runs = results[previous_runs:]
+        new_events = events[previous_events:]
+        finished = (
+            len(new_runs) == len(allocation["run_ids"])
+            if mode == "run"
+            else any(e.get("event") == "built" for e in new_events)
+        )
+        failed = (
+            status != 0 or not finished or any(r["exit_code"] != 0 for r in new_runs)
+        )
+        failed = failed or any(e.get("event") == "build_failed" for e in new_events)
+        code = max(code, int(failed))
+        if failed and manifest["stop_on_failure"]:
             break
     emit(
         "complete",
@@ -497,31 +679,43 @@ def run(config, root, folder, build_only=False, configure_only=False):
 
 def submit(config, root, folder):
     manifest = export(config, root, folder)
-    for profile in manifest["profiles"]:
-        if "slurm" not in profile:
+    for allocation in manifest["allocations"]:
+        if allocation["slurm"] is None:
             raise ValueError(
-                "Add Slurm resources to profile " + profile["id"] + " before submitting"
+                "Add Slurm resources to profile "
+                + allocation["server"]
+                + " before submitting"
             )
     jobs = []
-    for profile in manifest["profiles"]:
-        if "slurm" not in profile:
-            raise ValueError(
-                "Add Slurm resources to profile " + profile["id"] + " before submitting"
-            )
-        text = (folder / (profile["id"] + ".sbatch")).read_text()
+    for allocation in manifest["allocations"]:
+        profile = allocation["profile"]
+        text = (folder / (allocation["id"] + ".sbatch")).read_text()
         argv = ["sbatch", "--parsable"]
         if profile.get("kind") == "ssh":
-            argv = ssh(profile, shlex.join(argv))
+            argv = ssh(profile, shlex.join(argv), False)
         result = subprocess.run(
             argv, input=text, text=True, capture_output=True, check=True
         )
         job_id = result.stdout.strip().split(";", 1)[0]
         if not job_id.isdigit():
             raise ValueError("Unexpected sbatch job ID: " + result.stdout)
-        job = {"server": profile["id"], "job_id": job_id, "profile": profile}
+        job = {
+            "server": profile["id"],
+            "allocation": allocation["id"],
+            "slurm": allocation["slurm"],
+            "job_id": job_id,
+            "profile": profile,
+        }
         jobs.append(job)
         write(folder / "jobs.json", jobs)
-        emit("submitted", server=profile["id"], job_id=job_id, folder=str(folder))
+        emit(
+            "submitted",
+            server=profile["id"],
+            allocation=allocation["id"],
+            slurm=allocation["slurm"],
+            job_id=job_id,
+            folder=str(folder),
+        )
     return 0
 
 
@@ -535,7 +729,7 @@ def job_action(folder, action):
             else ["squeue", "--noheader", "--jobs", job_id, "--format", "%T"]
         )
         if profile.get("kind") == "ssh":
-            argv = ssh(profile, shlex.join(argv))
+            argv = ssh(profile, shlex.join(argv), False)
         result = subprocess.run(argv, text=True, capture_output=True, check=True)
         status = "CANCELED" if action == "cancel" else result.stdout.strip()
         if action == "poll" and not status:
@@ -549,7 +743,7 @@ def job_action(folder, action):
                 "JobIDRaw,State",
             ]
             if profile.get("kind") == "ssh":
-                argv = ssh(profile, shlex.join(argv))
+                argv = ssh(profile, shlex.join(argv), False)
             result = subprocess.run(argv, text=True, capture_output=True, check=True)
             status = next(
                 (
@@ -560,15 +754,27 @@ def job_action(folder, action):
                 "UNKNOWN",
             )
         job["status"] = status
-        emit("job", server=job["server"], job_id=job_id, status=status)
+        emit(
+            "job",
+            server=job["server"],
+            allocation=job["allocation"],
+            job_id=job_id,
+            status=status,
+        )
     write(folder / "jobs.json", jobs)
     return 0
 
 
 def dispatch(args):
-    config, root = load_config(args.config, args.project)
+    if args.action == "parse-args":
+        print(json.dumps(shlex.split(args.text)))
+        return 0
     if args.action == "format":
-        write(args.config, config)
+        write(args.config, read(args.config))
+        return 0
+    config, root = load_config(args.config, args.project, args.library)
+    if args.action == "resolve":
+        print(json.dumps(config))
         return 0
     stamp = dt.datetime.now().strftime("%Y%m%d-%H%M%S-%f")
     folder = (
@@ -587,7 +793,7 @@ def dispatch(args):
         log = str(Path(trial["folder"]) / "output.log")
         if profile.get("kind") == "ssh":
             subprocess.run(
-                ssh(profile, shlex.join(["tail", "-n", "300", log])), check=True
+                ssh(profile, shlex.join(["tail", "-n", "300", log]), False), check=True
             )
         else:
             with Path(log).open() as source:
@@ -630,21 +836,17 @@ def dispatch(args):
         return 0
     if args.action == "submit":
         return submit(config, root, folder)
-    return run(
-        config,
-        root,
-        folder,
-        build_only=args.action in {"build", "configure"},
-        configure_only=args.action == "configure",
-    )
+    return run(config, root, folder, args.action)
 
 
-def main(argv=None):
+def main(argv):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
         "action",
         choices=[
             "format",
+            "resolve",
+            "parse-args",
             "describe",
             "targets",
             "configure",
@@ -659,14 +861,16 @@ def main(argv=None):
     )
     parser.add_argument("config")
     parser.add_argument("--project")
+    parser.add_argument("--library")
     parser.add_argument("--output-dir")
     parser.add_argument("--run-id", type=int)
+    parser.add_argument("--text")
     return dispatch(parser.parse_args(argv))
 
 
 if __name__ == "__main__":
     try:
-        sys.exit(main())
+        sys.exit(main(sys.argv[1:]))
     except KeyboardInterrupt:
         emit("canceled")
         sys.exit(130)

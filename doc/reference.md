@@ -95,7 +95,7 @@ require("overseer").setup({
     run_tasks = { "Run" },
   },
   cmake = { enabled = false },
-  experiment = { python = "python3", width = 0.85, height = 0.85, border = "rounded" },
+  experiment = { python = "python3", library = "", width = 0.85, height = 0.85, border = "rounded" },
   -- Configure the task output buffer and window
   output = {
     -- Use a terminal buffer to display output. If false, a normal buffer is used

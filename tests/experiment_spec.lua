@@ -4,7 +4,7 @@ local overseer = require("overseer")
 vim.opt.rtp:append(vim.fn.getcwd())
 
 describe("experiment panel", function()
-  local cwd, root, source, source_buf, state, notify, system, source_size
+  local cwd, root, source, source_buf, state, notify, system, source_size, ui_select, ui_input
   local function settle()
     vim.wait(60, function()
       return false
@@ -16,6 +16,16 @@ describe("experiment panel", function()
     assert.is_not_nil(mapping.callback, key)
     mapping.callback()
   end
+  local function panel_option(id)
+    for row, item in pairs(state.rows) do
+      if item.kind == "parameter" and item.id == id then
+        vim.api.nvim_win_set_cursor(state.win, { row, 0 })
+        panel_key("<CR>")
+        return
+      end
+    end
+    error("Missing option row: " .. id)
+  end
   local function picker()
     local value
     assert.is_true(vim.wait(3000, function()
@@ -26,6 +36,32 @@ describe("experiment panel", function()
       return value.manager and value.manager:num_results() > 0
     end, 10))
     return value
+  end
+  local function row_for(id)
+    for row, item in pairs(state.rows) do
+      if item.kind == "parameter" and item.id == id then
+        vim.api.nvim_set_current_win(state.win)
+        vim.api.nvim_win_set_cursor(state.win, { row, 0 })
+        return item.index
+      end
+    end
+    error("Missing option row " .. id)
+  end
+  local function dialogs(inputs, selections)
+    vim.ui.input = function(_, callback)
+      callback(table.remove(inputs, 1))
+    end
+    vim.ui.select = function(items, opts, callback)
+      local answer = table.remove(selections, 1)
+      for index, item in ipairs(items) do
+        local label = opts.format_item and opts.format_item(item) or tostring(item)
+        if label == answer then
+          callback(item, index)
+          return
+        end
+      end
+      error("Missing dialog selection: " .. tostring(answer))
+    end
   end
   before_each(function()
     cwd = vim.fn.getcwd()
@@ -47,29 +83,39 @@ describe("experiment panel", function()
     }, root .. "/probe.sh")
     vim.uv.fs_chmod(root .. "/probe.sh", 493)
     local cfg = {
-      version = 1,
+      version = 2,
       name = "Panel test",
       project = "..",
       preset = "",
       target = "",
       binary = "probe.sh",
       args = { "${dataset}", "${threads}", "${method}", "${result}" },
-      datasets = {
-        directory = "dataset/output",
-        choices = {
-          { id = "d1", path = "dataset/output/d1.mtx" },
-          { id = "d2", path = "dataset/output/d2.mtx" },
+      parameters = {
+        {
+          id = "dataset",
+          label = "Datasets",
+          source = { directory = "dataset/output", pattern = "*.mtx" },
+          choices = {
+            { id = "d1", path = "dataset/output/d1.mtx" },
+            { id = "d2", path = "dataset/output/d2.mtx" },
+          },
+          selected = { "d1" },
         },
-        selected = { "d1" },
-      },
-      threads = { choices = { 1, 2, 4 }, selected = { 1, 2 } },
-      methods = {
-        choices = {
-          { id = "a", value = "algorithm-a" },
-          { id = "b", value = "algorithm-b" },
-          { id = "c", value = "algorithm-c" },
+        {
+          id = "threads",
+          choices = { 1, 2, 4 },
+          selected = { 1, 2 },
+          requirements = { cpus = "${value}" },
         },
-        selected = { "a" },
+        {
+          id = "method",
+          choices = {
+            { id = "a", value = "algorithm-a" },
+            { id = "b", value = "algorithm-b" },
+            { id = "c", value = "algorithm-c" },
+          },
+          selected = { "a" },
+        },
       },
       servers = { choices = { { id = "local", kind = "local" } }, selected = { "local" } },
       output_dir = "results",
@@ -81,8 +127,14 @@ describe("experiment panel", function()
     source_size = { vim.api.nvim_win_get_width(source), vim.api.nvim_win_get_height(source) }
     notify = vim.notify
     system = vim.system
+    ui_select, ui_input = vim.ui.select, vim.ui.input
     vim.notify = function() end
-    overseer.setup({ dap = false, results = { enabled = true }, cmake = { enabled = false } })
+    overseer.setup({
+      dap = false,
+      results = { enabled = true },
+      cmake = { enabled = false },
+      experiment = { library = root .. "/option-library.json" },
+    })
     state = experiment.open(root, true)
     assert.is_true(vim.wait(3000, function()
       return state.plan ~= nil
@@ -105,6 +157,7 @@ describe("experiment panel", function()
     vim.fn.delete(root, "rf")
     vim.notify = notify
     vim.system = system
+    vim.ui.select, vim.ui.input = ui_select, ui_input
     config.setup({ results = { enabled = false } })
   end)
 
@@ -138,7 +191,7 @@ describe("experiment panel", function()
   end)
 
   it("marks multiple datasets with Tab and persists the entire selection", function()
-    panel_key("d")
+    panel_option("dataset")
     local current = picker()
     assert.is_true(
       vim.api.nvim_win_get_config(current.prompt_win).zindex
@@ -154,23 +207,23 @@ describe("experiment panel", function()
     settle()
     require("telescope.actions").select_default(buf)
     assert.is_true(vim.wait(3000, function()
-      return #state.config.datasets.selected == 2
+      return #state.config.parameters[1].selected == 2
     end, 10))
-    assert.are.same({ "d1", "d2" }, state.config.datasets.selected)
+    assert.are.same({ "d1", "d2" }, state.config.parameters[1].selected)
     local saved = require("overseer.files").load_json_file(state.file)
-    assert.are.same({ "d1", "d2" }, saved.datasets.selected)
+    assert.are.same({ "d1", "d2" }, saved.parameters[1].selected)
   end)
 
   it("selects all methods by stable IDs rather than their command-line values", function()
-    panel_key("m")
+    panel_option("method")
     local current = picker()
     vim.fn.maparg("<C-a>", "i", false, true).callback()
     settle()
     require("telescope.actions").select_default(current.prompt_bufnr)
     assert.is_true(vim.wait(3000, function()
-      return #state.config.methods.selected == 3
+      return #state.config.parameters[3].selected == 3
     end, 10))
-    assert.are.same({ "a", "b", "c" }, state.config.methods.selected)
+    assert.are.same({ "a", "b", "c" }, state.config.parameters[3].selected)
     assert.is_true(vim.wait(3000, function()
       return state.plan.total == 6
     end, 10))
@@ -205,12 +258,12 @@ describe("experiment panel", function()
       return state.task and state.task:is_complete()
     end, 10))
     local snapshot = require("overseer.files").load_json_file(state.task.metadata.experiment_config)
-    assert.are.same({ "a" }, snapshot.methods.selected)
-    state.config.methods.selected = { "b" }
+    assert.are.same({ "a" }, snapshot.parameters[3].selected)
+    state.config.parameters[3].selected = { "b" }
     panel_key("w")
     assert.are.same(
       { "a" },
-      require("overseer.files").load_json_file(state.task.metadata.experiment_config).methods.selected
+      require("overseer.files").load_json_file(state.task.metadata.experiment_config).parameters[3].selected
     )
     panel_key("E")
     assert.is_true(vim.wait(8000, function()
@@ -221,7 +274,7 @@ describe("experiment panel", function()
     assert.are.equal(1, vim.fn.filereadable(state.folder .. "/local.sbatch"))
     assert.are.same(
       { "b" },
-      require("overseer.files").load_json_file(state.folder .. "/experiment.json").methods.selected
+      require("overseer.files").load_json_file(state.folder .. "/experiment.json").parameters[3].selected
     )
   end)
   it("opens failed run output automatically and retrieves a selected run log", function()
@@ -537,5 +590,184 @@ describe("experiment panel", function()
     assert.is_true(vim.tbl_contains(lines, "second error"))
     assert.is_true(vim.tbl_contains(lines, "extra detail"))
     assert.is_false(vim.bo[state.buf].modifiable)
+  end)
+  it("creates named experiments and reuses a shared option with independent selections", function()
+    local original = state.file
+    dialogs({ "SpGEMM study" }, { "Start empty" })
+    panel_key("N")
+    state = experiment.open(root, true)
+    assert.is_not.equal(original, state.file)
+    assert.are.equal("SpGEMM study", state.config.name)
+    assert.are.equal(0, #state.config.parameters)
+    dialogs({}, { "Threads", "development" })
+    panel_key("a")
+    assert.are.equal("threads", state.config.parameters[1].template)
+    assert.are.same({ 1, 2, 4 }, state.resolved.parameters[1].selected)
+    local first = state.file
+    dialogs({ "SpMV study" }, { "Copy current settings" })
+    panel_key("N")
+    state = experiment.open(root, true)
+    assert.is_not.equal(first, state.file)
+    assert.are.equal("threads", state.config.parameters[1].template)
+    vim.ui.select, vim.ui.input = ui_select, ui_input
+    panel_option("threads")
+    local current = picker()
+    vim.fn.maparg("<C-u>", "i", false, true).callback()
+    current:set_prompt("4")
+    assert.is_true(vim.wait(3000, function()
+      local entry = require("telescope.actions.state").get_selected_entry()
+      return entry and entry.value.id == "4"
+    end, 10))
+    vim.fn.maparg("<Tab>", "i", false, true).callback()
+    settle()
+    require("telescope.actions").select_default(current.prompt_bufnr)
+    assert.is_true(vim.wait(3000, function()
+      return state.config.parameters[1].selected ~= nil
+    end, 10))
+    assert.are.same({ "4" }, state.config.parameters[1].selected)
+    local saved = require("overseer.experiment_store").read(first)
+    assert.are.equal("development", saved.parameters[1].preset)
+    assert.is_nil(saved.parameters[1].selected)
+    dialogs({}, { "SpGEMM study" })
+    panel_key("O")
+    state = experiment.open(root, true)
+    assert.are.equal(first, state.file)
+    assert.are.same({ 1, 2, 4 }, state.resolved.parameters[1].selected)
+    assert.are.equal(first, require("overseer.experiment_store").active(root))
+  end)
+
+  it("creates an arbitrary flag option from dialogs and edits it by its row", function()
+    dialogs(
+      { "Block size", "8,16,32", "--block-size" },
+      { "Create a new option…", "Append a command-line flag" }
+    )
+    panel_key("a")
+    local option = state.config.parameters[4]
+    assert.are.equal("block_size", option.id)
+    assert.are.same({ 8, 16, 32 }, option.choices)
+    assert.are.same({ "--block-size", "${value}" }, option.args)
+    assert.are.same({ "8", "16", "32" }, option.selected)
+    vim.ui.select, vim.ui.input = ui_select, ui_input
+    row_for("block_size")
+    panel_key("m")
+    assert.is_truthy(picker().prompt_title:find("Block size", 1, true))
+    require("telescope.actions").close(vim.api.nvim_get_current_buf())
+    assert.is_nil(next(vim.fn.maparg("d", "n", false, true)))
+    assert.is_nil(next(vim.fn.maparg("t", "n", false, true)))
+  end)
+
+  it("adds the reserved Slurm node option and chooses its saved preset", function()
+    dialogs({}, { "Slurm nodes", "scaling" })
+    panel_key("a")
+    assert.are.equal("nodes", state.config.parameters[4].id)
+    assert.are.equal("nodes", state.config.parameters[4].template)
+    assert.are.same({ 2, 4, 16 }, state.resolved.parameters[4].selected)
+    assert.are.same({ nodes = "${value}" }, state.resolved.parameters[4].slurm)
+    row_for("nodes")
+    dialogs({}, { "Choose selection preset", "small" })
+    panel_key("s")
+    assert.are.same({ 2 }, state.resolved.parameters[4].selected)
+  end)
+
+  it("saves a shared selection preset without replacing experiment-specific bindings", function()
+    state.config.parameters[2] =
+      { id = "threads", template = "threads", args = {}, selected = { 1, 4 } }
+    panel_key("w")
+    panel_key("R")
+    row_for("threads")
+    dialogs({ "my-laptop" }, { "Save selection as preset" })
+    panel_key("s")
+    local library = require("overseer.experiment_store").library()
+    assert.are.same({ 1, 4 }, library.options.threads.presets["my-laptop"])
+    assert.are.same({ "--threads", "${value}" }, library.options.threads.args)
+    assert.are.same({}, state.resolved.parameters[2].args)
+    assert.are.equal("my-laptop", state.config.parameters[2].preset)
+  end)
+
+  it("publishes a custom option so it can be attached to another experiment", function()
+    dialogs(
+      { "Tile size", "8,16" },
+      { "Create a new option…", "Use a placeholder in experiment arguments" }
+    )
+    panel_key("a")
+    row_for("tile_size")
+    dialogs({ "tile_sizes" }, { "Save option to shared library" })
+    panel_key("s")
+    assert.are.equal("tile_sizes", state.config.parameters[4].template)
+    dialogs({ "Another kernel" }, { "Start empty" })
+    panel_key("N")
+    state = experiment.open(root, true)
+    dialogs({}, { "Tile size", "All choices" })
+    panel_key("a")
+    assert.are.equal("tile_sizes", state.config.parameters[1].template)
+    assert.are.same(
+      { 8, 16 },
+      vim.tbl_map(function(choice)
+        return choice.value
+      end, state.resolved.parameters[1].choices)
+    )
+  end)
+  it("round-trips stored strings and retains experiment selection when recording jobs", function()
+    local store = require("overseer.experiment_store")
+    local value = {
+      text = 'quoted "text" with \\ slash and\nnewline {braces} · UTF-8',
+      list = { "a", "b" },
+      empty = vim.empty_dict(),
+    }
+    local file = root .. "/strings.json"
+    store.write(file, value)
+    assert.are.same(value, store.read(file))
+    store.activate(root, state.file)
+    store.record_jobs(root, state.file, root .. "/submitted")
+    assert.are.equal(state.file, store.active(root))
+    assert.are.equal(root .. "/submitted", store.session(root, state.file).jobs_folder)
+    local another = store.create(root, "Another", state.config)
+    store.record_jobs(root, state.file, root .. "/more-jobs")
+    assert.are.equal(another, store.active(root))
+    assert.are.equal(root .. "/more-jobs", store.session(root, state.file).jobs_folder)
+    store.activate(root, state.file)
+  end)
+  it("edits program arguments with quoting and preserves placeholders", function()
+    dialogs({ '--label "two words" --count ${threads}' }, {})
+    for row, item in pairs(state.rows) do
+      if item.kind == "arguments" then
+        vim.api.nvim_win_set_cursor(state.win, { row, 0 })
+      end
+    end
+    panel_key("m")
+    assert.are.same({ "--label", "two words", "--count", "${threads}" }, state.config.args)
+  end)
+
+  it("keeps a previous experiment's live output separate after switching configurations", function()
+    local gate, script = root .. "/release-old", root .. "/old.sh"
+    vim.fn.writefile({
+      "echo BEFORE-SWITCH",
+      'while [ ! -e "$1" ]; do sleep 0.02; done',
+      "echo AFTER-SWITCH",
+    }, script)
+    state.config.build.commands = { { "bash", script, gate } }
+    panel_key("w")
+    panel_key("C")
+    local previous = state
+    assert.is_true(vim.wait(3000, function()
+      return table.concat(previous.logs, "\n"):find("BEFORE-SWITCH", 1, true) ~= nil
+    end, 10))
+    dialogs({ "New study" }, { "Copy current settings" })
+    panel_key("N")
+    state = experiment.open(root, true)
+    assert.is_not.equal(previous.file, state.file)
+    panel_key("3")
+    vim.fn.writefile({}, gate)
+    assert.is_true(vim.wait(3000, function()
+      return previous.task:is_complete()
+    end, 10))
+    settle()
+    assert.are.equal("New study", state.config.name)
+    assert.is_truthy(table.concat(previous.logs, "\n"):find("AFTER-SWITCH", 1, true))
+    assert.is_falsy(
+      table
+        .concat(vim.api.nvim_buf_get_lines(state.buf, 0, -1, false), "\n")
+        :find("AFTER-SWITCH", 1, true)
+    )
   end)
 end)

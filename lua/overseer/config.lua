@@ -10,7 +10,7 @@ local default_config = {
     run_tasks = { "Run" },
   },
   cmake = { enabled = false },
-  experiment = { python = "python3", width = 0.85, height = 0.85, border = "rounded" },
+  experiment = { python = "python3", library = "", width = 0.85, height = 0.85, border = "rounded" },
   -- Configure the task output buffer and window
   output = {
     -- Use a terminal buffer to display output. If false, a normal buffer is used
@@ -236,12 +236,14 @@ end
 
 ---@class (exact) overseer.ConfigExperiment
 ---@field python string
+---@field library string
 ---@field width number
 ---@field height number
 ---@field border string
 
 ---@class (exact) overseer.SetupConfigExperiment
 ---@field python? string Python executable for the portable experiment runner
+---@field library? string Shared option library path; empty uses the Neovim config directory
 ---@field width? number Fraction of editor width used by the floating panel
 ---@field height? number Fraction of editor height used by the floating panel
 ---@field border? string Border style for the floating panel

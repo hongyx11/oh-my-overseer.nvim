@@ -74,8 +74,9 @@ preset selector. See [the results guide](doc/results.md) for setup and behavior.
 
 ## Experiments (hongyx11 fork)
 
-Select multiple datasets, thread counts, methods, and host/resource profiles, then
-run their combinations sequentially from a centered floating panel. Export the
+Create named experiments and attach reusable options such as threads, tile size,
+layout, or Slurm nodes. Edit selections by row and share named option presets
+between experiments. Run combinations sequentially from a centered floating panel. Export the
 same plan for standalone execution or Slurm submission. See the
 [experiment guide](doc/experiments.md) and [SpMV example](examples/spmv-experiment.json).
 

@@ -1,124 +1,227 @@
 # Experiments (hongyx11 fork)
 
-An experiment runs the Cartesian product of selected datasets, thread counts,
-methods, and server profiles. One controller executes each combination in order;
-there is never more than one active trial per interactive experiment. The reusable
-centered floating panel has configuration, run status, and output views. It uses
-85% of the editor width and height, with a rounded border, and resizes with the
-editor without changing source splits. Telescope selectors open above it. Failed runs switch
-it to their output automatically. `Esc` or `q` closes the panel and returns to the source window while work
-continues. Each tab reuses one experiment float.
+Create named experiments, attach reusable options, and run the Cartesian product
+of their selected values. Options can be threads, tile size, precision, layout,
+iterations, or any other name. `nodes` is reserved for Slurm node requests.
 
-The Logs view follows the current configure, build, or run operation live. Starting
-an operation clears previous output snapshots. Press `3` to switch to the latest
-output and follow new lines; scroll up to read earlier output without being moved.
-Press `3` again to resume following. The view labels the operation supplying its
-output. Inspecting a run with Enter still opens that run's saved snapshot.
+The centered floating panel uses 85% of the editor, resizes with it, and preserves
+source splits. Its configuration, runs, and live output views share one float
+per tab. Telescope dialogs open above it. `Esc` or `q` returns to the source while
+work continues; failures open their output automatically.
 
-## Start
+## Start and create an experiment
 
-Requires Python 3.9+, Bash, and Telescope for selection. Enable the results interface:
+Requires Python 3.9+, Bash, and Telescope for option selection:
 
 ```lua
 require("overseer").setup({
-  results = { enabled = true, width = 0.45 },
-  experiment = { python = "python3", width = 0.85, height = 0.85, border = "rounded" },
+  results = { enabled = true },
+  experiment = {
+    python = "python3",
+    library = "", -- empty uses stdpath("config")/overseer/option_sets.json
+    width = 0.85,
+    height = 0.85,
+    border = "rounded",
+  },
 })
 ```
 
-`:OverseerExperimentInit` creates `.overseer/experiment.json` if missing and opens
-it. Set the binary and its real arguments with `e`. Existing files are preserved.
-`:OverseerExperiment` toggles the panel; `:OverseerExperimentRun` starts it.
+`:OverseerExperimentInit` creates an empty experiment if none exists and opens
+it. `:OverseerExperiment` toggles the panel; `:OverseerExperimentRun` runs the
+active experiment. Existing source files are preserved.
 
-The [SpMV example](../examples/spmv-experiment.json) is configured for SpCraft's
-`bench_ompspmv`: two coordinate matrices under `dataset/output`, threads 1/2/4,
-and float/double precision variants. Copy it into your SpCraft project's
-`.overseer/experiment.json`. These variants use actual `--precision` arguments;
-the benchmark does not expose an algorithm `--method` flag. Additional binaries
-or algorithm arguments can be configured as methods.
+1. Press `N`, give the experiment a name, and choose **Start empty** or **Copy
+   current settings**. Named files live in `.overseer/experiments/`.
+2. Press `a` to attach a shared option or create a new option. New options accept
+   a name and comma-separated values, then let you choose a command-line flag,
+   environment variable, or placeholder binding.
+3. Move with `j`/`k` to an option row and press **Enter** or **m**. Tab toggles a
+   checkbox, Ctrl-a selects all, Ctrl-u clears all, and Enter applies the checked
+   set. Escape cancels the dialog.
+4. Use `s` on an option row to choose or save a named selection preset, edit
+   values/bindings, save the option to the shared library, or remove it.
+5. Set the preset, target, binary, arguments, and servers by pressing Enter on
+   their rows. `C` configures; `T` discovers executable targets through CMake's
+   File API after configuration. `B` builds and `r` runs.
+6. Press `O` to switch experiments. The active file is remembered per project.
 
-## Panel controls
+For example, save Threads with presets **development** `[1,2,4]` and **scaling**
+`[1,2,4,8,16]`. Attach Threads to SpMV and SpGEMM; each experiment can choose a
+different preset or override its selected values without changing the other.
+
+The shared library starts with **Threads** and **Slurm nodes**. Threads supplies
+`--threads`, `OMP_NUM_THREADS`, and CPU requirements. An experiment may override
+its binding when its binary uses another flag or already includes `${threads}`
+in common arguments. Slurm nodes supplies choices 2/4/16, presets **small** and
+**scaling**, and the reserved `nodes` binding. It requests resources and does not
+append a program flag.
+
+The [SpMV example](../examples/spmv-experiment.json) is self-contained and uses
+SpCraft's real `bench_ompspmv` CLI: two coordinate matrices under `dataset/output`,
+threads 1/2/4, and float/double variants via `--precision`. Copy it into SpCraft's
+`.overseer/experiment.json`. There is no assumed algorithm `--method` flag.
+
+## Controls
 
 | Key | Action |
 | --- | --- |
-| `1`, `2`, `3` | Configuration, runs, live output |
-| `p` | Choose a CMake configure preset and its build directory |
-| `C` | Configure; creates the CMake File API query for target discovery |
-| `T` | Choose a discovered executable target and its binary |
-| `b` | Choose an executable file |
-| `d`, `t`, `m`, `h` | Select datasets, thread counts, methods, hosts/resources |
-| `B`, `r` | Build, run all combinations sequentially |
-| Enter in Runs | Read that run's output snapshot (last 300 lines) |
-| `w`, `e`, `R` | Save, close the float and edit JSON in the source window, reload JSON |
-| `E`, `L` | Export a portable bundle, load another config for this project |
-| `S`, `u`, `X` | Submit Slurm jobs, refresh their states, cancel recorded jobs |
-| `x`, `Esc` / `q` | Stop the interactive operation, close the panel |
+| `1`, `2`, `3` | Configuration, runs, latest live output |
+| Enter / `m` | Modify the highlighted configuration/option row; inspect a Runs row |
+| `a` | Add a shared option or create a new option |
+| `s` on an option | Presets, values, bindings, publish, remove |
+| `N`, `O` | New/copy experiment, choose saved experiment |
+| `p`, `T`, `b` | Choose CMake preset, executable target, binary |
+| `C`, `B`, `r` | Configure, build, run combinations sequentially |
+| `w`, `e`, `R` | Save, close float and edit JSON, reload |
+| `E`, `L` | Export a portable bundle, load another source JSON |
+| `S`, `u`, `X` | Submit Slurm jobs, refresh states, cancel recorded jobs |
+| `x`, `Esc` / `q` | Stop the active operation, close the float |
 
-In selectors, type to filter and use arrows or Ctrl-n/Ctrl-p to move. **Tab toggles
-a checkbox; Enter applies all checked entries.** Ctrl-a selects all entries and
-Ctrl-u clears them. Escape closes without applying. Existing selections remain
-checked when a selector opens. Selectors save the resulting configuration.
+`3` follows the current configure/build/run output. Starting an operation clears
+old snapshots. Scroll up to pause auto-scroll; press `3` again to follow. Enter
+on a Runs row reads its saved output (last 300 lines). Runs are labeled with the
+actual option names, so new options require no keymaps or table columns.
 
-Dataset selection scans `.mtx` files recursively in `datasets.directory`, retaining
-existing IDs and remote path mappings for known files. Targets come from CMake's
-File API; configure with `C` before selecting `T`. Build commands are explicit
-argument arrays: the first command configures, and all commands run for `B` or
-before trials when `build.before_run` is true. Selecting a preset updates the
-build directory and a binary path beneath the old build directory. It does not
-rewrite custom command arrays.
+Each experiment has its own task, logs, run manifest, and submitted job IDs.
+Switching experiments does not stop active work. Each launch captures resolved
+choices and bindings into `launch.json`; changing a shared definition or another
+experiment cannot change an already launched command. Restart uses this snapshot.
 
-Each launch freezes the configuration into `launch.json`. Editing selections
-while an operation runs changes the next launch; its commands remain unchanged.
-Restarting an experiment through the results API uses its frozen configuration.
-The Runs view and per-run output use the active manifest, even after selections
-change. History and existing regular Overseer tasks remain available.
+## Parameter-list configuration
 
-## Configuration
-
-Version 1 uses `choices` and `selected` for each dimension. IDs must be unique
-within their dimension. Thread choices can be numbers; methods can be strings
-or objects. Paths in a source config are relative to the project, whose path is
-relative to the config file (`"project": ".."` for `.overseer/experiment.json`).
+Source schema version 2 replaces the fixed dataset/thread/method sections with
+an ordered `parameters` list. The original file `.overseer/experiment.json` and
+named experiment files use the same schema. Project paths are relative to the
+source file: `".."` for the original file, `"../.."` for named experiment files.
 
 ```json
 {
-  "version": 1,
-  "name": "SpMV sweep",
-  "project": "..",
-  "binary": "build/bin/spmv",
-  "args": ["--matrix", "${dataset}", "--threads", "${threads}", "--method", "${method}", "--output", "${result}"],
-  "environment": { "OMP_NUM_THREADS": "${threads}" },
-  "datasets": {
-    "directory": "dataset/output",
-    "choices": [{ "id": "d1", "path": "dataset/output/d1.mtx" }],
-    "selected": ["d1"]
-  },
-  "threads": { "choices": [1, 2, 4], "selected": [1, 2, 4] },
-  "methods": { "choices": ["a", "b", "c"], "selected": ["a", "b", "c"] },
+  "version": 2,
+  "name": "SpGEMM tuning",
+  "project": "../..",
+  "binary": "build/bin/spgemm",
+  "args": ["--output", "${result}"],
+  "parameters": [
+    { "id": "threads", "template": "threads", "preset": "development" },
+    {
+      "id": "tile_size",
+      "label": "Tile size",
+      "choices": [8, 16, 32],
+      "selected": [8, 16],
+      "presets": { "small": [8, 16], "wide": [16, 32] },
+      "args": ["--tile-size", "${value}"]
+    }
+  ],
   "servers": { "choices": [{ "id": "local", "kind": "local" }], "selected": ["local"] },
   "output_dir": "results/overseer",
   "stop_on_failure": false
 }
 ```
 
-Replace these argument names with the binary's actual CLI. Supported placeholders
-in trial arguments, binary paths, and environments are `${project}`, `${dataset}`,
-`${dataset_id}`, `${threads}`, `${method}`, `${server}`, `${run_id}`, `${result}`,
-`${run_dir}`, `${preset}`, and `${target}`. Arguments and paths are individually
-shell-quoted; avoid embedding shell syntax into argument arrays.
+Use flags supported by the actual binary. No parameters means one run per server;
+an option with no selected values prevents launching. Parameter IDs must be unique
+identifiers. IDs `project`, `server`, `run_id`, `result`, `run_dir`, `preset`,
+`target`, and `value` belong to the runner. `nodes` has the Slurm semantics below.
+Choice IDs must be unique within an option; scalar numbers and strings derive an
+ID from their value, and object choices can provide `id`, `label`, and `value`.
 
-A method object can set `id`, `label`, `value` (the `${method}` value), `args`
-(appended to common args), `arguments` (replaces common args), `binary`,
-`binaries` (map of server IDs to executables), and `environment`. A server can
-also override `binary`, `arguments`, and `environment`. Method overrides take
-precedence. Use a launcher executable and replacement arguments for MPI programs.
+`template` references the shared library. `preset` selects a named saved set;
+explicit `selected` overrides it. The UI clears `preset` when applying a custom
+selection. Overrides of `choices`, `presets`, `args`, `environment`, `slurm`, and
+`requirements` belong to the experiment; they do not edit the shared definition.
+Saving a selection preset adds the set without replacing shared bindings. Saving
+an entire option explicitly publishes its definition; replacing an existing
+shared option is a separate dialog choice. Shared changes affect future loads,
+not frozen launches or exported bundles.
 
-Optional build configuration:
+```json
+{
+  "version": 1,
+  "options": {
+    "tile_sizes": {
+      "label": "Tile size",
+      "choices": [8, 16, 32],
+      "presets": { "development": [8, 16], "large": [32] },
+      "args": ["--tile-size", "${value}"]
+    }
+  }
+}
+```
+
+`${value}` in an option binding is its current selected value. `${tile_size}` or
+any other parameter ID can be used in common arguments, environments, binary
+paths, and launchers. Other trial placeholders are `${project}`, `${server}`,
+`${run_id}`, `${result}`, `${run_dir}`, `${preset}`, and `${target}`. Every argv
+item is quoted individually; arguments are arrays, not shell expressions.
+
+Options may define `args` (appended arguments), `environment`, and
+`requirements.cpus`. Object choices can append `args`, replace common
+`arguments`, override `binary`, provide `binaries` keyed by server or parent
+profile ID, or override `launcher` and `environment`. Options are applied in list
+order; a later explicit override wins. CPU requirements must be positive and fit
+the allocation. Unknown placeholders and selection IDs fail before execution.
+
+A file option uses `source: {"directory":"dataset/output","pattern":"*.mtx"}`
+and choices such as `{"id":"d1","path":"dataset/output/d1.mtx"}`. Enter rescans
+that directory recursively, preserving known IDs and path metadata. `paths`
+can override a dataset per profile or parent, e.g. `{"server1":"/datasets/d1.mtx"}`.
+Other paths are relative to each server's project directory.
+
+## Slurm nodes and hosts
+
+```json
+{
+  "parameters": [
+    { "id": "nodes", "template": "nodes", "preset": "scaling" }
+  ],
+  "servers": {
+    "choices": [
+      { "id": "server1", "kind": "ssh", "host": "my-cluster", "project_dir": "/scratch/me/project", "slurm": { "partition": "cpu", "time": "00:15:00" } },
+      { "id": "server1-gpu", "extends": "server1", "slurm": { "partition": "gpu", "gpus": 1 } },
+      { "id": "server1-h100", "extends": "server1-gpu", "slurm": { "constraint": "h100" } },
+      { "id": "server1-a100", "extends": "server1-gpu", "slurm": { "constraint": "a100" } }
+    ],
+    "selected": ["server1"]
+  }
+}
+```
+
+`nodes` must bind `slurm.nodes` to `${value}` and contain positive integer node
+counts. It cannot be renamed or bound to a command-line flag. Resource options
+require a server profile with `slurm`; selecting local execution without Slurm
+fails before requesting resources.
+
+The planner groups trials by server and resolved resource settings. Nodes
+2/4/16 produce three allocations/batch scripts. Interactive execution obtains
+one `salloc` allocation per group and runs its trials sequentially as `srun`
+steps. Batch submission creates one job per group, with a single controller.
+Separately submitted jobs may run concurrently. `jobs.json` tracks each allocation
+and job ID independently, including multiple allocations on the same host.
+
+A plain serial/OpenMP program uses one task on one node per step. For a distributed
+binary, configure a launcher, for example
+`"launcher": ["srun","--nodes","${nodes}","--ntasks","${nodes}"]` for one MPI
+rank per node. Node requests alone do not turn a serial binary into an MPI program.
+Allocation `ntasks` defaults to the node count (or 1 without nodes); explicit task
+and CPU settings remain profile policy. [Slurm salloc documentation](https://slurm.schedmd.com/salloc.html)
+describes the allocation/controller lifetime.
+
+Supported resource fields: `partition`, `account`, `qos`, `constraint`, `gpus`,
+`cpus_per_task`, `memory`, `time`, `nodes`, and `ntasks`. Hosts use normal SSH
+configuration with BatchMode authentication. Remote project paths must be absolute;
+code, binaries, datasets, modules, and presets must already exist there. `setup`
+contains trusted shell commands. `enabled: false` disables an inherited profile.
+The runner does not synchronize files or convert an OpenMP binary into a GPU one.
+
+## CMake and export
+
+Build commands are explicit argv arrays. The first configures; all commands run
+for `B` or before trials if `build.before_run` is true:
 
 ```json
 {
   "preset": "release",
-  "target": "spmv",
+  "target": "spgemm",
   "build": {
     "directory": "build/release",
     "jobs": 4,
@@ -132,76 +235,44 @@ Optional build configuration:
 ```
 
 Build placeholders are `${project}`, `${preset}`, `${target}`, `${build_dir}`,
-and `${build_jobs}`. A configure/build failure prevents that server's trials.
-`stop_on_failure` decides whether a failed trial or server stops subsequent work.
+and `${build_jobs}`. Preset selection changes the build directory and a binary
+under the old directory without rewriting custom command arrays. Failed builds
+prevent that group's trials; `stop_on_failure` controls subsequent work.
 
-## Hosts and resource profiles
-
-Profiles may share a host while selecting different resources:
-
-```json
-{
-  "servers": {
-    "choices": [
-      { "id": "server1", "kind": "ssh", "host": "my-cluster", "project_dir": "/scratch/me/spcraft", "setup": ["module load cuda"] },
-      { "id": "server1-gpu", "extends": "server1", "slurm": { "partition": "gpu", "gpus": 1, "cpus_per_task": 4, "time": "00:15:00" } },
-      { "id": "server1-h100", "extends": "server1-gpu", "slurm": { "constraint": "h100" } },
-      { "id": "server1-a100", "extends": "server1-gpu", "slurm": { "constraint": "a100" } },
-      { "id": "server2", "kind": "ssh", "host": "another-host", "project_dir": "/home/me/spcraft" }
-    ],
-    "selected": ["server1-h100"]
-  }
-}
-```
-
-`host` uses normal SSH configuration; authentication uses BatchMode. Set the real
-remote project directory. Code, binaries, datasets, CMake presets, and modules
-must already exist there; the runner does not synchronize files. `setup` contains
-trusted shell commands. `enabled: false` prevents execution and is inherited;
-remove it or set true once a profile is configured.
-
-Dataset `paths` can override a path per profile or its parent, e.g.
-`"paths": {"server1": "/datasets/d1.mtx"}`. Relative paths otherwise resolve under
-each server's project directory. GPU profiles should select a GPU binary or method;
-requesting a GPU alone does not convert an OpenMP binary into a GPU computation.
-
-Supported Slurm fields: `partition`, `account`, `qos`, `constraint`, `gpus`,
-`cpus_per_task`, `memory`, `time`, `nodes`, `ntasks`. CPU allocation must cover the
-largest selected thread count. The sequential controller uses `ntasks: 1`.
-Interactive `r` uses a single `srun` allocation for all trials on a Slurm profile;
-a plain SSH profile executes directly. Server profiles execute sequentially.
-`S` submits one batch job per selected profile, so separately submitted profiles
-may run concurrently while trials within each job stay sequential.
-
-## Export and run outside Neovim
-
-`E` writes a bundle under the configured output directory:
-
-- `experiment.json`: replayable selections with a project-relative path.
-- `manifest.json`: expanded commands, environments, resources, and output paths.
-- `runner.py`: standalone standard-library Python runner.
-- `<profile>.sbatch`: reviewed, expanded batch script for each selected profile.
+`E` exports resolved `experiment.json`, expanded `manifest.json`, standalone
+`runner.py`, and one `<allocation>.sbatch` per group. Definitions and selections
+are embedded, so the bundle needs neither Neovim nor the shared option library:
 
 ```bash
 python3 runner.py run experiment.json
-python3 runner.py build experiment.json
 python3 runner.py submit experiment.json --output-dir submitted
 python3 runner.py poll experiment.json --output-dir submitted
 python3 runner.py cancel experiment.json --output-dir submitted
 ```
 
-Use `--project /path/to/project` when relocating a bundle. Remote paths remain
-explicit. Export does not copy binaries or datasets. To submit a generated script
-manually, transfer it to the cluster and run `sbatch <profile>.sbatch`. Batch
-scheduler output follows Slurm's default `slurm-%j.out`; each trial also writes
-its own output log under the configured remote results directory.
+Use `--project /path/to/project` after relocating a bundle. Source configs with
+shared references require `--library /path/to/option_sets.json` outside Neovim.
+Exports do not copy binaries or datasets. Remote paths remain explicit.
 
-Local runs write `results.json` with exit codes plus numbered per-trial folders
-containing `output.log` and, if the binary writes `${result}`, `result.json`.
-For remote interactive runs, the aggregate log and completion records are local;
-individual trial logs/results remain on the server. Submitted batch completion
-is polled with `squeue` then `sacct`; detailed trial logs can be read in the Runs
-view over SSH. `jobs.json` records exact job IDs, and `.overseer/state.json` lets
-the panel reconnect to those IDs after Neovim restarts. Cancel affects only those
-recorded jobs. Submitted progress is job state plus logs, not a live per-trial
-status stream. Live per-trial progress is provided for interactive runs.
+Local runs write aggregate logs, `results.json`, and numbered trial folders with
+`output.log` and, if the binary writes `${result}`, `result.json`. Remote trial
+logs/results remain on the server and can be read from Runs over SSH. Submitted
+progress is job state plus saved logs; interactive runs stream per-trial progress.
+State is read with `squeue` then `sacct`. Cancellation affects only the recorded
+job IDs. Scheduler exit status cannot hide failed or unstarted trials.
+
+## Ownership and schema change
+
+The Python resolver owns option/preset validation and reference resolution; the
+pure planner owns Cartesian expansion, argv/env expansion, and allocation grouping.
+Process/file effects are owned by load, run, export, submit, and job operations.
+The Neovim store owns atomic JSON writes, the active source file, and library
+publication; the panel owns row dialogs and per-experiment tasks/logs. Floating
+window lifetime is per tab, independent of experiment task lifetime.
+
+The fixed dataset/thread/method schema and its key dispatch have been removed.
+Current source configs and examples use the parameter-list schema; historical
+results and old exported runners remain historical artifacts. Launch snapshots
+are resolved values, never live library references. Tests cover arbitrary options,
+shared preset isolation, named experiments, node allocations, frozen replay,
+streaming, cancellation, failure focus, and source-layout preservation.

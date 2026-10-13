@@ -1,0 +1,64 @@
+{
+  "version": 1,
+  "options": {
+    "threads": {
+      "label": "Threads",
+      "choices": [
+        1,
+        2,
+        4,
+        8,
+        16
+      ],
+      "presets": {
+        "development": [
+          1,
+          2,
+          4
+        ],
+        "scaling": [
+          1,
+          2,
+          4,
+          8,
+          16
+        ],
+        "single": [
+          1
+        ]
+      },
+      "args": [
+        "--threads",
+        "${value}"
+      ],
+      "environment": {
+        "OMP_NUM_THREADS": "${value}"
+      },
+      "requirements": {
+        "cpus": "${value}"
+      }
+    },
+    "nodes": {
+      "label": "Slurm nodes",
+      "choices": [
+        2,
+        4,
+        16
+      ],
+      "presets": {
+        "small": [
+          2
+        ],
+        "scaling": [
+          2,
+          4,
+          16
+        ]
+      },
+      "slurm": {
+        "nodes": "${value}"
+      },
+      "reserved_id": "nodes"
+    }
+  }
+}
