@@ -6,6 +6,12 @@ there is never more than one active trial per interactive experiment. The reusab
 right window has configuration, run status, and output views. Failed runs switch
 it to their output automatically. Closing the panel keeps the experiment running.
 
+The Logs view follows the current configure, build, or run operation live. Starting
+an operation clears previous output snapshots. Press `3` to switch to the latest
+output and follow new lines; scroll up to read earlier output without being moved.
+Press `3` again to resume following. The view labels the operation supplying its
+output. Inspecting a run with Enter still opens that run's saved snapshot.
+
 ## Start
 
 Requires Python 3.9+, Bash, and Telescope for selection. Enable the results interface:

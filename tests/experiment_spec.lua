@@ -4,7 +4,7 @@ local overseer = require("overseer")
 vim.opt.rtp:append(vim.fn.getcwd())
 
 describe("experiment panel", function()
-  local cwd, root, source, source_buf, state, notify
+  local cwd, root, source, source_buf, state, notify, system
   local function settle()
     vim.wait(60, function()
       return false
@@ -79,6 +79,7 @@ describe("experiment panel", function()
     vim.cmd.cd(root)
     source, source_buf = vim.api.nvim_get_current_win(), vim.api.nvim_get_current_buf()
     notify = vim.notify
+    system = vim.system
     vim.notify = function() end
     overseer.setup({ dap = false, results = { enabled = true }, cmake = { enabled = false } })
     state = experiment.open(root, true)
@@ -97,6 +98,7 @@ describe("experiment panel", function()
     vim.cmd.cd(cwd)
     vim.fn.delete(root, "rf")
     vim.notify = notify
+    vim.system = system
     config.setup({ results = { enabled = false } })
   end)
 
@@ -223,4 +225,138 @@ describe("experiment panel", function()
     end, 10))
     assert.is_truthy(state.inspected_log[1]:find("run 1", 1, true))
   end)
+  for _, operation in ipairs({ { key = "C", label = "configure" }, { key = "B", label = "build" } }) do
+    it(
+      "streams current " .. operation.label .. " output after inspecting a previous run",
+      function()
+        panel_key("r")
+        assert.is_true(vim.wait(8000, function()
+          return state.task and state.task:is_complete()
+        end, 10))
+        panel_key("2")
+        for row, id in pairs(state.run_rows) do
+          if id == 1 then
+            vim.api.nvim_win_set_cursor(state.win, { row, 0 })
+          end
+        end
+        panel_key("<CR>")
+        assert.is_true(vim.wait(3000, function()
+          return state.inspected_log ~= nil
+        end, 10))
+        local gate = root .. "/release-" .. operation.label
+        local script = root .. "/slow-" .. operation.label .. ".sh"
+        vim.fn.writefile({
+          "#!/usr/bin/env bash",
+          "echo " .. operation.label .. "-START",
+          "echo " .. operation.label .. "-STDERR >&2",
+          'while [ ! -e "$1" ]; do sleep 0.02; done',
+          "echo " .. operation.label .. "-DONE",
+        }, script)
+        state.config.build.commands = { { "bash", script, gate } }
+        if operation.key == "B" then
+          table.insert(state.config.build.commands, 1, { "bash", "-c", "echo configure-for-build" })
+        end
+        panel_key("w")
+        panel_key(operation.key)
+        assert.is_nil(state.inspected_log)
+        panel_key("3")
+        local function output()
+          return table.concat(vim.api.nvim_buf_get_lines(state.buf, 0, -1, false), "\n")
+        end
+        assert.is_true(vim.wait(3000, function()
+          local text = output()
+          return text:find(operation.label .. "-START", 1, true)
+            and text:find(operation.label .. "-STDERR", 1, true)
+        end, 10))
+        assert.is_true(state.task:is_running(), "output must arrive before completion")
+        assert.is_falsy(output():find("Output for run 1", 1, true))
+        assert.is_falsy(output():find("DATASET=", 1, true))
+        assert.are.equal(source_buf, vim.api.nvim_win_get_buf(source))
+        vim.fn.writefile({}, gate)
+        assert.is_true(vim.wait(5000, function()
+          return state.task:is_complete() and output():find(operation.label .. "-DONE", 1, true)
+        end, 10))
+        assert.are.equal(overseer.STATUS.SUCCESS, state.task.status)
+      end
+    )
+  end
+  it("follows live output while allowing scrolling back until Logs is selected again", function()
+    local script, first, second = root .. "/scroll.sh", root .. "/first", root .. "/second"
+    vim.fn.writefile({
+      'for i in {1..20}; do echo "initial-$i"; done',
+      'while [ ! -e "$1" ]; do sleep 0.02; done',
+      'for i in {1..20}; do echo "middle-$i"; done',
+      'while [ ! -e "$2" ]; do sleep 0.02; done',
+      "echo final-output",
+    }, script)
+    state.config.build.commands = { { "bash", script, first, second } }
+    panel_key("w")
+    panel_key("B")
+    panel_key("3")
+    local function row(text)
+      for number, line in ipairs(vim.api.nvim_buf_get_lines(state.buf, 0, -1, false)) do
+        if line == text then
+          return number
+        end
+      end
+    end
+    assert.is_true(vim.wait(3000, function()
+      return row("initial-20") ~= nil
+    end, 10))
+    assert.is_true(state.task:is_running())
+    assert.are.equal(row("initial-20"), vim.api.nvim_win_get_cursor(state.win)[1])
+    vim.api.nvim_win_set_cursor(state.win, { 3, 0 })
+    vim.fn.writefile({}, first)
+    assert.is_true(vim.wait(3000, function()
+      return row("middle-20") ~= nil
+    end, 10))
+    assert.are.equal(3, vim.api.nvim_win_get_cursor(state.win)[1])
+    panel_key("3")
+    assert.are.equal(row("middle-20"), vim.api.nvim_win_get_cursor(state.win)[1])
+    vim.fn.writefile({}, second)
+    assert.is_true(vim.wait(3000, function()
+      return state.task:is_complete() and row("final-output") ~= nil
+    end, 10))
+    assert.are.equal(row("final-output"), vim.api.nvim_win_get_cursor(state.win)[1])
+  end)
+
+  it(
+    "ignores an old log response after starting a new operation and switching to live output",
+    function()
+      panel_key("r")
+      assert.is_true(vim.wait(8000, function()
+        return state.task and state.task:is_complete()
+      end, 10))
+      panel_key("2")
+      for row, id in pairs(state.run_rows) do
+        if id == 1 then
+          vim.api.nvim_win_set_cursor(state.win, { row, 0 })
+        end
+      end
+      local old_response
+      vim.system = function(argv, opts, callback)
+        if argv[3] == "log" then
+          old_response = callback
+          return {}
+        end
+        return system(argv, opts, callback)
+      end
+      panel_key("<CR>")
+      assert.is_not_nil(old_response)
+      vim.system = system
+      state.config.build.commands = { { "bash", "-c", "echo CURRENT-CONFIGURE" } }
+      panel_key("w")
+      panel_key("C")
+      panel_key("3")
+      old_response({ code = 0, stdout = "OUTDATED-RUN-SNAPSHOT", stderr = "" })
+      assert.is_true(vim.wait(3000, function()
+        return state.task:is_complete()
+      end, 10))
+      settle()
+      assert.is_nil(state.inspected_log)
+      local output = table.concat(vim.api.nvim_buf_get_lines(state.buf, 0, -1, false), "\n")
+      assert.is_truthy(output:find("CURRENT-CONFIGURE", 1, true))
+      assert.is_falsy(output:find("OUTDATED-RUN-SNAPSHOT", 1, true))
+    end
+  )
 end)

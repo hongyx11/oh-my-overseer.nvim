@@ -113,6 +113,7 @@ local function render(state)
       .. (state.failed or 0),
     "",
   }
+  local log_end
   if state.view == "config" then
     vim.list_extend(lines, {
       "Preset:  " .. (config.preset ~= "" and config.preset or "(not selected)"),
@@ -200,11 +201,20 @@ local function render(state)
       )
     end
   else
+    if not state.inspected_log then
+      local running = state.task and state.task:is_running()
+      table.insert(
+        lines,
+        "Output: " .. (state.log_name or "No operation") .. (running and " · live" or "")
+      )
+      table.insert(lines, "")
+    end
     local logs = state.inspected_log or state.logs
     vim.list_extend(lines, logs)
     if #logs == 0 then
       table.insert(lines, "No output yet")
     end
+    log_end = #lines
   end
   vim.list_extend(lines, {
     "",
@@ -221,11 +231,16 @@ local function render(state)
       and state.win
     or nil
   local cursor = win and vim.api.nvim_win_get_cursor(win) or nil
+  local follow = log_end
+    and not state.inspected_log
+    and (state.follow_logs or (cursor and state.log_end and cursor[1] >= state.log_end))
+  state.follow_logs = nil
+  state.log_end = log_end
   vim.bo[state.buf].modifiable = true
   vim.api.nvim_buf_set_lines(state.buf, 0, -1, false, lines)
   vim.bo[state.buf].modifiable = false
   if win and cursor then
-    vim.api.nvim_win_set_cursor(win, { math.min(cursor[1], #lines), 0 })
+    vim.api.nvim_win_set_cursor(win, { follow and log_end or math.min(cursor[1], #lines), 0 })
   end
   if win and vim.api.nvim_win_get_buf(win) == state.buf then
     vim.wo[win].wrap = state.view ~= "logs"
@@ -251,12 +266,17 @@ local function run_log(state, id)
   if not state.run_folder then
     return
   end
+  state.log_request = (state.log_request or 0) + 1
+  local request = state.log_request
   local argv = command(state, "log", state.run_folder)
   vim.list_extend(argv, { "--run-id", tostring(id) })
   vim.system(
     argv,
     { text = true },
     vim.schedule_wrap(function(result)
+      if state.log_request ~= request then
+        return
+      end
       state.view = "logs"
       state.inspected_log = vim.split(
         result.code == 0 and result.stdout or result.stdout .. (result.stderr or ""),
@@ -563,7 +583,8 @@ local function process_event(state, event)
   elseif event.event == "allocation" then
     state.status = "Waiting for Slurm allocation · " .. event.server
   elseif event.event == "build" then
-    state.status = "Building · " .. event.server
+    local configuring = state.task and state.task.metadata.experiment_mode == "configure"
+    state.status = (configuring and "Configuring · " or "Building · ") .. event.server
   elseif event.event == "error" or event.event == "build_failed" then
     state.status = "FAILURE"
     table.insert(state.logs, event.message or ("Build failed on " .. event.server))
@@ -624,8 +645,10 @@ action = function(state, mode, override)
     state.run_folder = state.folder
     state.active_plan = nil
     state.runs, state.completed, state.failed = {}, 0, 0
-    state.inspected_log = nil
   end
+  state.log_request = (state.log_request or 0) + 1
+  state.inspected_log = nil
+  state.follow_logs = true
   state.logs = {}
   state.status = mode .. "…"
   vim.fn.mkdir(state.folder, "p")
@@ -642,6 +665,7 @@ action = function(state, mode, override)
     poll = "Refresh Slurm jobs",
     cancel = "Cancel Slurm jobs",
   }
+  state.log_name = names[mode]
   local task = require("overseer").new_task({
     name = names[mode],
     cwd = state.root,
@@ -699,7 +723,9 @@ local function map_panel(state)
     map(tostring(number), function()
       state.view = view
       if view == "logs" then
+        state.log_request = (state.log_request or 0) + 1
         state.inspected_log = nil
+        state.follow_logs = true
       end
       render(state)
     end)
