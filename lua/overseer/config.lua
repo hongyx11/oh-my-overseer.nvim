@@ -10,7 +10,7 @@ local default_config = {
     run_tasks = { "Run" },
   },
   cmake = { enabled = false },
-  experiment = { python = "python3" },
+  experiment = { python = "python3", width = 0.85, height = 0.85, border = "rounded" },
   -- Configure the task output buffer and window
   output = {
     -- Use a terminal buffer to display output. If false, a normal buffer is used
@@ -188,7 +188,7 @@ end
 ---@field dap boolean
 ---@field results overseer.ConfigResults
 ---@field cmake {enabled: boolean}
----@field experiment {python: string}
+---@field experiment overseer.ConfigExperiment
 ---@field log_level integer
 ---@field experimental_wrap_builtins overseer.ConfigWrapBuiltins
 ---@field output overseer.ConfigOutput
@@ -206,7 +206,7 @@ end
 ---@field dap? boolean Patch nvim-dap to support preLaunchTask and postDebugTask
 ---@field results? overseer.SetupConfigResults
 ---@field cmake? {enabled?: boolean}
----@field experiment? {python?: string}
+---@field experiment? overseer.SetupConfigExperiment
 ---@field log_level? integer Log level
 ---@field experimental_wrap_builtins? overseer.SetupConfigWrapBuiltins
 ---@field output? overseer.SetupConfigOutput
@@ -233,6 +233,18 @@ end
 ---@field focus_failure? boolean
 ---@field history_limit? integer Completed workflow history per project
 ---@field run_tasks? string[] Tasks whose output is shown live
+
+---@class (exact) overseer.ConfigExperiment
+---@field python string
+---@field width number
+---@field height number
+---@field border string
+
+---@class (exact) overseer.SetupConfigExperiment
+---@field python? string Python executable for the portable experiment runner
+---@field width? number Fraction of editor width used by the floating panel
+---@field height? number Fraction of editor height used by the floating panel
+---@field border? string Border style for the floating panel
 
 ---@class (exact) overseer.ConfigWrapBuiltins
 ---@field enabled boolean overseer will hook vim.system and vim.fn.jobstart and display those as tasks

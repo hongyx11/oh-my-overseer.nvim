@@ -1,5 +1,6 @@
 local M = {}
 local states = {}
+local panels = {}
 local MARKER = "@@OVERSEER "
 local refresh
 local action
@@ -9,6 +10,68 @@ local command
 local function root()
   return require("overseer.results").context_project()
 end
+
+local function panel_config(state)
+  local opts = require("overseer.config").experiment
+  local columns, rows = vim.o.columns, math.max(3, vim.o.lines - vim.o.cmdheight)
+  local width = math.max(1, math.min(columns - 2, math.floor(columns * opts.width)))
+  local height = math.max(1, math.min(rows - 2, math.floor(rows * opts.height)))
+  return {
+    relative = "editor",
+    row = math.max(0, math.floor((rows - height - 2) / 2)),
+    col = math.max(0, math.floor((columns - width - 2) / 2)),
+    width = width,
+    height = height,
+    style = "minimal",
+    border = opts.border,
+    title = " " .. (state.config.name or "Experiment") .. " · " .. state.status .. " ",
+    title_pos = "center",
+    zindex = 40,
+  }
+end
+
+local function panel_for(tab)
+  local panel = panels[tab or vim.api.nvim_get_current_tabpage()]
+  if panel and vim.api.nvim_win_is_valid(panel.win) then
+    return panel
+  end
+end
+
+local function source_window()
+  local current = vim.api.nvim_get_current_win()
+  if vim.api.nvim_win_get_config(current).relative == "" then
+    return current
+  end
+  local panel = panel_for()
+  if panel and vim.api.nvim_win_is_valid(panel.source) then
+    return panel.source
+  end
+  for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+    if vim.api.nvim_win_get_config(win).relative == "" then
+      return win
+    end
+  end
+end
+
+local function close_panel(panel)
+  local focused = vim.api.nvim_get_current_win() == panel.win
+  local source = panel.source
+  vim.api.nvim_win_close(panel.win, false)
+  if focused and source and vim.api.nvim_win_is_valid(source) then
+    vim.api.nvim_set_current_win(source)
+  end
+end
+
+vim.api.nvim_create_autocmd("VimResized", {
+  group = vim.api.nvim_create_augroup("OverseerExperimentPanel", { clear = true }),
+  callback = function()
+    for _, panel in pairs(panels) do
+      if vim.api.nvim_win_is_valid(panel.win) then
+        vim.api.nvim_win_set_config(panel.win, panel_config(panel.state))
+      end
+    end
+  end,
+})
 
 local function helper()
   return assert(
@@ -223,32 +286,38 @@ local function render(state)
     "C configure · B build · r run sequentially",
     "w save · e edit JSON · E export · L load",
     "S submit Slurm · u refresh jobs · X cancel jobs",
-    "x stop interactive run · q close · R reload",
+    "x stop interactive run · Esc / q close · R reload",
   })
-  local win = state.win
-      and vim.api.nvim_win_is_valid(state.win)
-      and vim.api.nvim_win_get_buf(state.win) == state.buf
-      and state.win
-    or nil
-  local cursor = win and vim.api.nvim_win_get_cursor(win) or nil
-  local follow = log_end
-    and not state.inspected_log
-    and (state.follow_logs or (cursor and state.log_end and cursor[1] >= state.log_end))
+  local follow_requested = state.follow_logs
   state.follow_logs = nil
   state.log_end = log_end
   vim.bo[state.buf].modifiable = true
+  local cursors = {}
+  for _, panel in pairs(panels) do
+    if panel.state == state and vim.api.nvim_win_is_valid(panel.win) then
+      cursors[panel.win] = vim.api.nvim_win_get_cursor(panel.win)
+    end
+  end
   vim.api.nvim_buf_set_lines(state.buf, 0, -1, false, lines)
   vim.bo[state.buf].modifiable = false
-  if win and cursor then
-    vim.api.nvim_win_set_cursor(win, { follow and log_end or math.min(cursor[1], #lines), 0 })
-  end
-  if win and vim.api.nvim_win_get_buf(win) == state.buf then
-    vim.wo[win].wrap = state.view ~= "logs"
-    vim.wo[win].linebreak = true
-    vim.wo[win].winbar = " "
-      .. (config.name or "Experiment"):gsub("%%", "%%%%")
-      .. " · "
-      .. state.status:gsub("%%", "%%%%")
+  for _, panel in pairs(panels) do
+    local cursor = cursors[panel.win]
+    if cursor then
+      local follow = log_end
+        and not state.inspected_log
+        and (follow_requested or (panel.log_end and cursor[1] >= panel.log_end))
+      panel.log_end = log_end
+      vim.api.nvim_win_set_cursor(
+        panel.win,
+        { follow and log_end or math.min(cursor[1], #lines), 0 }
+      )
+      vim.wo[panel.win].wrap = state.view ~= "logs"
+      vim.wo[panel.win].linebreak = true
+      vim.api.nvim_win_set_config(panel.win, {
+        title = " " .. (config.name or "Experiment") .. " · " .. state.status .. " ",
+        title_pos = "center",
+      })
+    end
   end
   vim.api.nvim_buf_clear_namespace(state.buf, state.ns, 0, -1)
   local function highlight(row, group)
@@ -716,6 +785,19 @@ action = function(state, mode, override)
 end
 
 local function map_panel(state)
+  local function close()
+    local panel = panel_for()
+    if panel and panel.state == state then
+      close_panel(panel)
+    end
+  end
+  for _, key in ipairs({ "q", "<Esc>" }) do
+    vim.keymap.set("n", key, close, {
+      buffer = state.buf,
+      silent = true,
+      desc = "Close experiment panel",
+    })
+  end
   local function map(key, callback)
     vim.keymap.set("n", key, callback, { buffer = state.buf, silent = true })
   end
@@ -780,8 +862,9 @@ local function map_panel(state)
     end
   end)
   map("e", function()
-    if state.source and vim.api.nvim_win_is_valid(state.source) then
-      vim.api.nvim_set_current_win(state.source)
+    local panel = panel_for()
+    if panel and panel.state == state then
+      close_panel(panel)
     end
     vim.cmd.edit(vim.fn.fnameescape(state.file))
   end)
@@ -822,17 +905,39 @@ function M.open(project, focus)
     vim.bo[state.buf].filetype = "OverseerExperiment"
     map_panel(state)
   end
-  local current = vim.api.nvim_get_current_win()
-  if current ~= state.win then
-    state.source = current
+  local tab = vim.api.nvim_get_current_tabpage()
+  local source = source_window()
+  local panel = panel_for(tab)
+  if not panel then
+    panel = { state = state, source = source }
+    panel.win = vim.api.nvim_open_win(state.buf, focus ~= false, panel_config(state))
+    panels[tab] = panel
+    vim.api.nvim_create_autocmd("WinClosed", {
+      pattern = tostring(panel.win),
+      once = true,
+      callback = function()
+        if panels[tab] == panel then
+          panels[tab] = nil
+        end
+      end,
+    })
+  else
+    panel.state, panel.source = state, source
+    panel.log_end = nil
+    vim.api.nvim_win_set_buf(panel.win, state.buf)
+    vim.api.nvim_win_set_config(panel.win, panel_config(state))
+    if focus ~= false then
+      vim.api.nvim_set_current_win(panel.win)
+    end
   end
-  state.win = require("overseer.results").mount(
-    state.buf,
-    state.config.name or "Experiment",
-    state.status,
-    focus ~= false,
-    state.root
-  )
+  state.win = panel.win
+  vim.b[state.buf].overseer_project = state.root
+  vim.wo[panel.win].number = false
+  vim.wo[panel.win].relativenumber = false
+  vim.wo[panel.win].signcolumn = "no"
+  vim.wo[panel.win].foldcolumn = "0"
+  vim.wo[panel.win].cursorline = true
+  vim.wo[panel.win].winbar = ""
   refresh(state)
   render(state)
   return state
@@ -840,19 +945,20 @@ end
 
 function M.toggle()
   local state = state_for(root())
-  if
-    state.win
-    and vim.api.nvim_win_is_valid(state.win)
-    and vim.api.nvim_win_get_buf(state.win) == state.buf
-  then
-    vim.api.nvim_win_close(state.win, false)
+  local panel = panel_for()
+  if panel and panel.state == state then
+    close_panel(panel)
   else
     M.open(state.root, true)
   end
 end
 
-function M.show(task, focus)
+function M.show(task, focus, automatic)
   local state = state_for(task.cwd)
+  local panel = panel_for()
+  if automatic and task:is_running() and (not panel or panel.state ~= state) then
+    return
+  end
   if task.status == "FAILURE" then
     state.view = "logs"
   end
@@ -860,12 +966,12 @@ function M.show(task, focus)
 end
 
 function M.run()
-  local state = M.open(root(), false)
+  local state = M.open(root(), true)
   action(state, "run")
 end
 
 function M.rerun(task)
-  local state = M.open(task.cwd, false)
+  local state = M.open(task.cwd, true)
   local snapshot = require("overseer.files").load_json_file(task.metadata.experiment_config)
   action(state, task.metadata.experiment_mode or "run", snapshot)
 end

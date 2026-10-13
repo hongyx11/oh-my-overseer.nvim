@@ -3,8 +3,11 @@
 An experiment runs the Cartesian product of selected datasets, thread counts,
 methods, and server profiles. One controller executes each combination in order;
 there is never more than one active trial per interactive experiment. The reusable
-right window has configuration, run status, and output views. Failed runs switch
-it to their output automatically. Closing the panel keeps the experiment running.
+centered floating panel has configuration, run status, and output views. It uses
+85% of the editor width and height, with a rounded border, and resizes with the
+editor without changing source splits. Telescope selectors open above it. Failed runs switch
+it to their output automatically. `Esc` or `q` closes the panel and returns to the source window while work
+continues. Each tab reuses one experiment float.
 
 The Logs view follows the current configure, build, or run operation live. Starting
 an operation clears previous output snapshots. Press `3` to switch to the latest
@@ -19,7 +22,7 @@ Requires Python 3.9+, Bash, and Telescope for selection. Enable the results inte
 ```lua
 require("overseer").setup({
   results = { enabled = true, width = 0.45 },
-  experiment = { python = "python3" },
+  experiment = { python = "python3", width = 0.85, height = 0.85, border = "rounded" },
 })
 ```
 
@@ -46,10 +49,10 @@ or algorithm arguments can be configured as methods.
 | `d`, `t`, `m`, `h` | Select datasets, thread counts, methods, hosts/resources |
 | `B`, `r` | Build, run all combinations sequentially |
 | Enter in Runs | Read that run's output snapshot (last 300 lines) |
-| `w`, `e`, `R` | Save, edit JSON in the source window, reload JSON |
+| `w`, `e`, `R` | Save, close the float and edit JSON in the source window, reload JSON |
 | `E`, `L` | Export a portable bundle, load another config for this project |
 | `S`, `u`, `X` | Submit Slurm jobs, refresh their states, cancel recorded jobs |
-| `x`, `q` | Stop the interactive operation, close the panel |
+| `x`, `Esc` / `q` | Stop the interactive operation, close the panel |
 
 In selectors, type to filter and use arrows or Ctrl-n/Ctrl-p to move. **Tab toggles
 a checkbox; Enter applies all checked entries.** Ctrl-a selects all entries and

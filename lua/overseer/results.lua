@@ -119,9 +119,9 @@ end
 
 M.mount = display
 
-function M.show(task, focus)
+function M.show(task, focus, automatic)
   if task.metadata.experiment then
-    require("overseer.experiment").show(task, focus)
+    require("overseer.experiment").show(task, focus, automatic)
     return
   end
   local buf = task:get_bufnr()
@@ -162,7 +162,7 @@ local function show_automatically(task, focus, record)
     vim.api.nvim_del_autocmd(record.pending_show)
     record.pending_show = nil
   end
-  if vim.api.nvim_win_get_config(0).relative ~= "" then
+  if vim.api.nvim_win_get_config(0).relative ~= "" and vim.bo.filetype ~= "OverseerExperiment" then
     -- Let a task/preset/file picker finish before focusing failure output.
     record.pending_show = vim.api.nvim_create_autocmd("WinEnter", {
       callback = function()
@@ -173,7 +173,9 @@ local function show_automatically(task, focus, record)
           record.pending_show = nil
           return true
         end
-        if vim.api.nvim_win_get_config(0).relative == "" then
+        if
+          vim.api.nvim_win_get_config(0).relative == "" or vim.bo.filetype == "OverseerExperiment"
+        then
           record.pending_show = nil
           vim.schedule(function()
             if not task:is_disposed() then
@@ -185,7 +187,7 @@ local function show_automatically(task, focus, record)
       end,
     })
   else
-    M.show(task, focus)
+    M.show(task, focus, true)
   end
 end
 

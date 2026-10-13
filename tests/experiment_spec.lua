@@ -4,7 +4,7 @@ local overseer = require("overseer")
 vim.opt.rtp:append(vim.fn.getcwd())
 
 describe("experiment panel", function()
-  local cwd, root, source, source_buf, state, notify, system
+  local cwd, root, source, source_buf, state, notify, system, source_size
   local function settle()
     vim.wait(60, function()
       return false
@@ -78,6 +78,7 @@ describe("experiment panel", function()
     vim.fn.writefile({ vim.json.encode(cfg) }, root .. "/.overseer/experiment.json")
     vim.cmd.cd(root)
     source, source_buf = vim.api.nvim_get_current_win(), vim.api.nvim_get_current_buf()
+    source_size = { vim.api.nvim_win_get_width(source), vim.api.nvim_win_get_height(source) }
     notify = vim.notify
     system = vim.system
     vim.notify = function() end
@@ -93,6 +94,11 @@ describe("experiment panel", function()
     end
     settle()
     vim.api.nvim_set_current_win(source)
+    for _, win in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
+      if vim.api.nvim_win_get_config(win).relative ~= "" then
+        vim.api.nvim_win_close(win, true)
+      end
+    end
     vim.api.nvim_win_set_buf(source, source_buf)
     vim.cmd.only({ bang = true })
     vim.cmd.cd(cwd)
@@ -102,23 +108,42 @@ describe("experiment panel", function()
     config.setup({ results = { enabled = false } })
   end)
 
-  it("toggles one full-height right panel while preserving the source window", function()
-    assert.are.equal(2, #vim.api.nvim_tabpage_list_wins(0))
+  it("toggles a centered floating panel without resizing or replacing the source window", function()
+    local window = vim.api.nvim_win_get_config(state.win)
+    assert.are.equal("editor", window.relative)
+    assert.are.equal(math.floor(vim.o.columns * 0.85), window.width)
+    assert.are.equal(math.floor((vim.o.lines - vim.o.cmdheight) * 0.85), window.height)
+    assert.are.equal(math.floor((vim.o.columns - window.width - 2) / 2), window.col)
+    assert.are.equal(
+      math.floor((vim.o.lines - vim.o.cmdheight - window.height - 2) / 2),
+      window.row
+    )
     assert.are.equal(source_buf, vim.api.nvim_win_get_buf(source))
-    assert.are.equal(vim.api.nvim_win_get_height(source), vim.api.nvim_win_get_height(state.win))
-    assert.is_true(
-      vim.api.nvim_win_get_position(state.win)[2] > vim.api.nvim_win_get_position(source)[2]
+    assert.are.same(
+      source_size,
+      { vim.api.nvim_win_get_width(source), vim.api.nvim_win_get_height(source) }
     )
     experiment.toggle()
     assert.are.equal(1, #vim.api.nvim_tabpage_list_wins(0))
+    assert.are.equal(source, vim.api.nvim_get_current_win())
     experiment.toggle()
     assert.are.equal(2, #vim.api.nvim_tabpage_list_wins(0))
     assert.are.equal(state.buf, vim.api.nvim_get_current_buf())
+    local win = state.win
+    experiment.open(root, true)
+    assert.are.equal(win, state.win)
+    assert.are.equal(2, #vim.api.nvim_tabpage_list_wins(0))
+    panel_key("<Esc>")
+    assert.are.equal(source, vim.api.nvim_get_current_win())
   end)
 
   it("marks multiple datasets with Tab and persists the entire selection", function()
     panel_key("d")
     local current = picker()
+    assert.is_true(
+      vim.api.nvim_win_get_config(current.prompt_win).zindex
+        > vim.api.nvim_win_get_config(state.win).zindex
+    )
     current:set_prompt("d2")
     assert.is_true(vim.wait(3000, function()
       local entry = require("telescope.actions.state").get_selected_entry()
@@ -359,4 +384,136 @@ describe("experiment panel", function()
       assert.is_falsy(output:find("OUTDATED-RUN-SNAPSHOT", 1, true))
     end
   )
+  it(
+    "keeps a task running when its float is dismissed immediately or during live output",
+    function()
+      local script, gate = root .. "/hidden.sh", root .. "/release-hidden"
+      vim.fn.writefile({
+        "echo BACKGROUND-START",
+        'while [ ! -e "$1" ]; do sleep 0.02; done',
+        "echo BACKGROUND-DONE",
+      }, script)
+      state.config.build.commands = { { "bash", script, gate } }
+      panel_key("w")
+      panel_key("C")
+      panel_key("<Esc>")
+      assert.is_true(vim.wait(3000, function()
+        return table.concat(state.logs, "\n"):find("BACKGROUND-START", 1, true) ~= nil
+      end, 10))
+      assert.is_true(state.task:is_running())
+      assert.are.equal(1, #vim.api.nvim_tabpage_list_wins(0))
+      assert.are.equal(source, vim.api.nvim_get_current_win())
+      experiment.toggle()
+      panel_key("3")
+      assert.is_truthy(
+        table
+          .concat(vim.api.nvim_buf_get_lines(state.buf, 0, -1, false), "\n")
+          :find("BACKGROUND-START", 1, true)
+      )
+      panel_key("q")
+      vim.fn.writefile({}, gate)
+      assert.is_true(vim.wait(3000, function()
+        return state.task:is_complete()
+      end, 10))
+      settle()
+      assert.are.equal(overseer.STATUS.SUCCESS, state.task.status)
+      assert.are.equal(1, #vim.api.nvim_tabpage_list_wins(0))
+      experiment.toggle()
+      panel_key("3")
+      assert.is_truthy(
+        table
+          .concat(vim.api.nvim_buf_get_lines(state.buf, 0, -1, false), "\n")
+          :find("BACKGROUND-DONE", 1, true)
+      )
+    end
+  )
+
+  it("resizes and recenters its float with the editor", function()
+    local columns, lines = vim.o.columns, vim.o.lines
+    vim.o.columns, vim.o.lines = 100, 32
+    vim.api.nvim_exec_autocmds("VimResized", {})
+    local resized = vim.api.nvim_win_get_config(state.win)
+    vim.o.columns, vim.o.lines = columns, lines
+    vim.api.nvim_exec_autocmds("VimResized", {})
+    assert.are.equal(85, resized.width)
+    assert.are.equal(math.floor((32 - vim.o.cmdheight) * 0.85), resized.height)
+    assert.are.equal(math.floor((100 - resized.width - 2) / 2), resized.col)
+    assert.are.equal(math.floor((32 - vim.o.cmdheight - resized.height - 2) / 2), resized.row)
+  end)
+
+  it("reuses one float when switching projects in the same tab", function()
+    local project = root .. "/another-project"
+    vim.fn.mkdir(project .. "/.overseer", "p")
+    local config = vim.deepcopy(state.config)
+    config.name = "Another experiment"
+    vim.fn.writefile({ vim.json.encode(config) }, project .. "/.overseer/experiment.json")
+    local win = state.win
+    local another = experiment.open(project, true)
+    assert.are.equal(win, another.win)
+    assert.are.equal(2, #vim.api.nvim_tabpage_list_wins(0))
+    assert.are.equal(another.buf, vim.api.nvim_win_get_buf(win))
+    assert.are.equal(project, vim.b[another.buf].overseer_project)
+    experiment.open(root, true)
+    assert.are.equal(win, state.win)
+    assert.are.equal(state.buf, vim.api.nvim_win_get_buf(win))
+    assert.are.equal(source_buf, vim.api.nvim_win_get_buf(source))
+  end)
+  it("keeps panel windows separate across tabs and closes only the current tab's float", function()
+    local first = state.win
+    vim.cmd.tabnew()
+    local another_source = vim.api.nvim_get_current_win()
+    experiment.open(root, true)
+    local second = state.win
+    assert.is_not.equal(first, second)
+    assert.are.equal("editor", vim.api.nvim_win_get_config(second).relative)
+    experiment.toggle()
+    assert.is_true(vim.api.nvim_win_is_valid(first))
+    assert.is_false(vim.api.nvim_win_is_valid(second))
+    assert.are.equal(another_source, vim.api.nvim_get_current_win())
+    vim.cmd.tabclose()
+    experiment.open(root, true)
+    assert.are.equal(first, state.win)
+  end)
+
+  it("closes the float when editing JSON in the original source window", function()
+    panel_key("e")
+    assert.are.equal(source, vim.api.nvim_get_current_win())
+    assert.are.equal(state.file, vim.api.nvim_buf_get_name(0))
+    assert.are.equal(1, #vim.api.nvim_tabpage_list_wins(0))
+  end)
+  it("opens the failing configure output in a float after the panel was closed", function()
+    local script, gate = root .. "/fail.sh", root .. "/release-failure"
+    vim.fn.writefile({
+      "echo CONFIGURE-START",
+      'while [ ! -e "$1" ]; do sleep 0.02; done',
+      "echo CONFIGURE-FAILED >&2",
+      "exit 1",
+    }, script)
+    state.config.build.commands = { { "bash", script, gate } }
+    panel_key("w")
+    panel_key("C")
+    assert.is_true(vim.wait(3000, function()
+      return table.concat(state.logs, "\n"):find("CONFIGURE-START", 1, true) ~= nil
+    end, 10))
+    panel_key("<Esc>")
+    vim.fn.writefile({}, gate)
+    assert.is_true(vim.wait(3000, function()
+      return state.task:is_complete()
+        and vim.api.nvim_win_is_valid(state.win)
+        and vim.api.nvim_get_current_buf() == state.buf
+    end, 10))
+    assert.are.equal(overseer.STATUS.FAILURE, state.task.status)
+    assert.are.equal("logs", state.view)
+    assert.are.equal("editor", vim.api.nvim_win_get_config(state.win).relative)
+    assert.is_truthy(
+      table
+        .concat(vim.api.nvim_buf_get_lines(state.buf, 0, -1, false), "\n")
+        :find("CONFIGURE-FAILED", 1, true)
+    )
+    assert.are.equal(source_buf, vim.api.nvim_win_get_buf(source))
+    assert.are.same(
+      source_size,
+      { vim.api.nvim_win_get_width(source), vim.api.nvim_win_get_height(source) }
+    )
+  end)
 end)
