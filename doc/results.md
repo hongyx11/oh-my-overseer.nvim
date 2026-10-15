@@ -84,6 +84,12 @@ while it runs affects subsequent workflows, not its remaining steps. File API
 queries are written only inside the selected build directory; source preset and
 task files are not rewritten.
 
+Tasks supplied by an external tool can opt out of preset rewriting with
+`metadata = { cmake_preserve_command = true }`. Use this when the tool owns the
+build directory and executable together, for example a profiler that needs its
+instrumented target and compilation database to remain aligned. The task still
+uses the normal output, status, diagnostics, and history interfaces.
+
 To prompt for a preset before the first workflow, use the asynchronous helper:
 
 ```lua

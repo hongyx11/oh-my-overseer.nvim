@@ -296,6 +296,9 @@ end
 
 -- The parent carries the choice so selecting another preset cannot alter an in-flight workflow.
 function M.apply(opts)
+  if opts.metadata and opts.metadata.cmake_preserve_command then
+    return
+  end
   local selection
   if opts.parent_id then
     local parent = require("overseer.task_list").get(opts.parent_id)
