@@ -7,6 +7,7 @@ local history = {}
 local latest = {}
 local windows = {}
 local line_counts = {}
+local source_buffers = {}
 
 local function context_project()
   if vim.b.overseer_project then
@@ -91,6 +92,7 @@ local function display(buf, name, status, focus, key)
     vim.cmd("botright vsplit")
     win = vim.api.nvim_get_current_win()
     windows[tab] = win
+    source_buffers[win] = vim.api.nvim_win_get_buf(source)
     vim.api.nvim_win_set_width(win, math.max(20, math.floor(vim.o.columns * config.results.width)))
   end
   vim.api.nvim_win_set_buf(win, buf)
@@ -155,6 +157,13 @@ function M.show(task, focus, automatic)
 end
 
 local function show_automatically(task, focus, record)
+  if
+    record.complete
+    and record.status == STATUS.SUCCESS
+    and record.task.metadata.results_close_on_success
+  then
+    return
+  end
   if record.tab ~= vim.api.nvim_get_current_tabpage() or latest[project(record.task)] ~= record then
     return
   end
@@ -415,6 +424,33 @@ function M.on_complete(task, status)
       and latest[project(root)] == record
     then
       show_automatically(target, config.results.focus_failure, record)
+    end
+    if status == STATUS.SUCCESS and root.metadata.results_close_on_success then
+      if record.pending_show then
+        vim.api.nvim_del_autocmd(record.pending_show)
+        record.pending_show = nil
+      end
+      local win = windows[record.tab]
+      if win and vim.api.nvim_win_is_valid(win) then
+        local buf = vim.api.nvim_win_get_buf(win)
+        for _, child in ipairs(record.tasks) do
+          if child:get_bufnr() == buf then
+            if #vim.api.nvim_tabpage_list_wins(record.tab) == 1 then
+              local source = source_buffers[win]
+              if not source or not vim.api.nvim_buf_is_valid(source) then
+                source = vim.api.nvim_create_buf(true, false)
+              end
+              vim.api.nvim_win_set_buf(win, source)
+              vim.wo[win].winbar = ""
+            else
+              vim.api.nvim_win_close(win, false)
+            end
+            windows[record.tab], line_counts[win] = nil, nil
+            source_buffers[win] = nil
+            break
+          end
+        end
+      end
     end
     local win = output_window()
     if win and target:get_bufnr() == vim.api.nvim_win_get_buf(win) then

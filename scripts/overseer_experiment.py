@@ -207,6 +207,13 @@ def resolve_config(source, library):
             for k in ("directory", "pattern")
         ):
             raise ValueError("File options require source.directory and source.pattern")
+        if "source" in option:
+            extra_directories = option["source"].get("directories", [])
+            if not isinstance(extra_directories, list) or any(
+                not isinstance(folder, str) or not folder.strip()
+                for folder in extra_directories
+            ):
+                raise ValueError("source.directories must be a list of folder paths")
         option["choices"] = choice_entries(option.get("choices", []))
         preset = option.get("preset")
         if preset and preset not in option.get("presets", {}):
@@ -1087,6 +1094,7 @@ class ExecutionSession:
             return 130
         emit(
             "complete",
+            exit_code=code,
             total=self.data["total"],
             completed=len(self.results),
             failed=sum(e["exit_code"] != 0 for e in self.results.values()),
@@ -1226,9 +1234,15 @@ def dispatch(args):
                                 }
         print(json.dumps(sorted(targets.values(), key=lambda v: v["id"])))
         return 0
-    if args.action == "describe":
-        manifest = plan(config, root, folder, validate=False)
-        print(json.dumps({"project": str(root), "config": config, "plan": manifest}))
+    if args.action in {"describe", "launch-plan"}:
+        manifest = plan(config, root, folder, validate=args.action == "launch-plan")
+        result = {"project": str(root), "config": config, "plan": manifest}
+        if args.action == "launch-plan":
+            result["build_commands"] = {
+                profile["id"]: build_commands(config, profile)
+                for profile in manifest["profiles"]
+            }
+        print(json.dumps(result))
         return 0
     if args.action == "export":
         manifest = export(config, root, folder)
@@ -1268,6 +1282,7 @@ def main(argv):
             "resolve",
             "parse-args",
             "describe",
+            "launch-plan",
             "targets",
             "configure",
             "run",

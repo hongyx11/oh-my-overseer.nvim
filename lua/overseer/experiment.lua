@@ -405,7 +405,7 @@ render = function(state)
     { "Experiments", "M manager · N new · O switch · L load" },
     { "Options", "Enter/m edit row · a add · s settings" },
     { "Build setup", "p preset · T target · b binary" },
-    { "Execute", "C configure · B build · r run · x stop" },
+    { "Execute", "C configure · B build · r run · P profile · x stop" },
     { "Files", "w save · e edit JSON · R reload · E export" },
     { "Remote", "Y sync · A reconnect · D release" },
     { "Slurm", "S submit · u refresh · X cancel" },
@@ -704,7 +704,8 @@ local function entries(values)
 end
 
 -- Each selection is a set. Enter applies the entire set; Tab marks multiple values.
-local function multi_select(title, items, selection, callback)
+local function multi_select(title, items, selection, callback, extra_actions)
+  items = vim.list_extend(vim.list_extend({}, items), extra_actions or {})
   local selected = {}
   for _, id in ipairs(selection) do
     selected[tostring(id)] = true
@@ -721,6 +722,9 @@ local function multi_select(title, items, selection, callback)
           value = item,
           ordinal = item.label or tostring(item.id),
           display = function()
+            if item.action then
+              return (display_text(item.label))
+            end
             return (selected[tostring(item.id)] and "[x] " or "[ ] ")
               .. display_text(item.label or item.id)
           end,
@@ -738,7 +742,7 @@ local function multi_select(title, items, selection, callback)
       attach_mappings = function(buf, map)
         local function toggle()
           local entry = action_state.get_selected_entry()
-          if entry then
+          if entry and not entry.value.action then
             local id = tostring(entry.value.id)
             selected[id] = not selected[id]
             picker:refresh(finder(), { reset_prompt = false })
@@ -746,7 +750,9 @@ local function multi_select(title, items, selection, callback)
         end
         local function all(value)
           for _, item in ipairs(items) do
-            selected[tostring(item.id)] = value
+            if not item.action then
+              selected[tostring(item.id)] = value
+            end
           end
           picker:refresh(finder(), { reset_prompt = false })
         end
@@ -758,15 +764,20 @@ local function multi_select(title, items, selection, callback)
           all(false)
         end)
         actions.select_default:replace(function()
+          local entry = action_state.get_selected_entry()
           local values = {}
           for _, item in ipairs(items) do
-            if selected[tostring(item.id)] then
+            if not item.action and selected[tostring(item.id)] then
               table.insert(values, item.id)
             end
           end
           actions.close(buf)
           vim.schedule(function()
-            callback(values)
+            if entry and entry.value.action then
+              entry.value.action(values)
+            else
+              callback(values)
+            end
           end)
         end)
         return true
@@ -776,52 +787,37 @@ local function multi_select(title, items, selection, callback)
   picker:find()
 end
 
-local function scan_files(state, definition)
-  local source = definition.source
-  local directory = source.directory
-  if not require("overseer.files").is_absolute(directory) then
-    directory = state.root .. "/" .. directory
-  end
-  local old, values = {}, {}
-  for _, choice in ipairs(definition.choices or {}) do
-    if choice.path then
-      local path = require("overseer.files").is_absolute(choice.path) and choice.path
-        or state.root .. "/" .. choice.path
-      old[vim.fs.normalize(path)] = choice
-    end
-  end
-  for _, path in ipairs(vim.fn.globpath(directory, "**/" .. source.pattern, false, true)) do
-    local relative = path:sub(1, #state.root + 1) == state.root .. "/" and path:sub(#state.root + 2)
-      or path
-    local name = path:sub(#directory + 2):gsub("%.[^%.]+$", "")
-    local choice = vim.deepcopy(old[vim.fs.normalize(path)] or { id = name, label = name })
-    choice.path = relative
-    table.insert(values, choice)
-  end
-  table.sort(values, function(a, b)
-    return a.id < b.id
-  end)
-  return values
-end
-
-select_option = function(state, index)
+select_option = function(state, index, selected)
   local definition = state.resolved.parameters[index]
   local option = state.config.parameters[index]
   local choices = definition.choices
+  local extra_actions
   if definition.source then
-    local files = scan_files(state, definition)
+    local file_options = require("overseer.experiment_files")
+    local files = file_options.scan(state.root, definition)
     if #files > 0 then
       option.choices, choices = files, files
     end
+    extra_actions = {
+      {
+        label = "Add folder…",
+        action = function(values)
+          file_options.add_folder(state, index, values, changed, function()
+            select_option(state, index, values)
+          end)
+        end,
+      },
+    }
   end
   multi_select(
     definition.label or definition.id,
     entries(choices),
-    definition.selected,
+    selected or definition.selected,
     function(values)
       option.selected, option.preset = values, nil
       changed(state)
-    end
+    end,
+    extra_actions
   )
 end
 
@@ -1058,7 +1054,9 @@ local function process_event(state, event)
     state.runs[event.id] =
       vim.tbl_extend("force", event, { status = event.exit_code == 0 and "SUCCESS" or "FAILURE" })
   elseif event.event == "complete" then
-    state.status = event.exit_code == 0 and "SUCCESS" or "FAILURE"
+    if event.exit_code ~= nil then
+      state.status = event.exit_code == 0 and "SUCCESS" or "FAILURE"
+    end
   elseif event.event == "submitted" or event.event == "job" then
     state.jobs = state.jobs or {}
     local key = event.allocation or event.server
@@ -1218,6 +1216,8 @@ action = function(state, mode, override)
       state.status = "CANCELED"
     elseif operation == "build" or operation == "configure" then
       state.status = "Ready"
+    elseif operation == "run" then
+      state.status = "SUCCESS"
     end
     if operation == "run" and state.active_plan and not state.disconnected then
       local first_failed
@@ -1304,6 +1304,19 @@ local function map_panel(state)
   end)
   map("O", function()
     choose_experiment(state)
+  end)
+  map("P", function()
+    if vim.fn.exists(":ProfilerExperiment") ~= 2 then
+      vim.notify("Install and configure profiler.nvim to profile experiments", vim.log.levels.ERROR)
+      return
+    end
+    if save(state) then
+      local panel = panel_for()
+      if panel then
+        close_panel(panel)
+      end
+      vim.api.nvim_cmd({ cmd = "ProfilerExperiment", args = { state.file } }, {})
+    end
   end)
   for key, mode in pairs({
     C = "configure",
@@ -1459,6 +1472,17 @@ function M.poll_resources(project, file)
       end
     end)
   )
+end
+
+-- Resolve the active experiment without submitting work or changing its session.
+-- Consumers receive a snapshot, using the same validation and expansion as runs.
+function M.launch_plan(project, file)
+  local state = { root = project, file = file or store.active(project) }
+  local result = vim.system(command(state, "launch-plan"), { text = true }):wait()
+  assert(result.code == 0, (result.stdout or "") .. (result.stderr or ""))
+  local snapshot = vim.json.decode(result.stdout)
+  snapshot.file = state.file
+  return snapshot
 end
 
 function M.execute_file(project, file, mode)

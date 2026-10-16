@@ -21,6 +21,56 @@ spec.loader.exec_module(runner)
 
 class ExperimentRunnerTests(unittest.TestCase):
 
+    def test_file_options_validate_additional_scan_folders(self):
+        self.config["parameters"][0]["source"] = {
+            "directory": "datasets", "directories": ["other matrices"], "pattern": "*.mtx"
+        }
+        resolved = runner.resolve_config(self.config, {"options": {}})
+        self.assertEqual(resolved["parameters"][0]["source"]["directories"], ["other matrices"])
+        for invalid in ("folder", [""], [1], None):
+            self.config["parameters"][0]["source"]["directories"] = invalid
+            with self.assertRaisesRegex(ValueError, "source.directories"):
+                runner.resolve_config(self.config, {"options": {}})
+
+    def test_launch_plan_resolves_commands_without_creating_a_session(self):
+        self.config["preset"] = "instrumented"
+        self.config["target"] = "probe"
+        self.config["build"] = {
+            "directory": "instrumented build",
+            "jobs": 3,
+            "commands": [
+                ["cmake", "--preset", "${preset}", "-B", "${build_dir}"],
+                ["cmake", "--build", "${build_dir}", "--target", "${target}", "-j", "${build_jobs}"],
+            ],
+        }
+        runner.write(self.file, self.config)
+        folder = self.root / "planned output"
+        result = subprocess.run(
+            [sys.executable, str(MODULE_PATH), "launch-plan", str(self.file), "--output-dir", str(folder)],
+            capture_output=True, text=True, check=True,
+        )
+        snapshot = json.loads(result.stdout)
+        self.assertEqual(snapshot["plan"]["total"], 27)
+        self.assertEqual(snapshot["plan"]["runs"][0]["parameters"]["dataset"], str(self.root.resolve() / "data/d1 quoted's.mtx"))
+        self.assertEqual(snapshot["build_commands"]["local"], [
+            ["cmake", "--preset", "instrumented", "-B", "instrumented build"],
+            ["cmake", "--build", "instrumented build", "--target", "probe", "-j", "3"],
+        ])
+        self.assertFalse(folder.exists())
+        self.assertFalse((self.root / ".omo").exists())
+
+    def test_launch_plan_rejects_an_empty_selection_without_creating_a_session(self):
+        self.config["parameters"][0]["selected"] = []
+        runner.write(self.file, self.config)
+        result = subprocess.run(
+            [sys.executable, str(MODULE_PATH), "launch-plan", str(self.file)],
+            capture_output=True, text=True,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertIn("Select a server and at least one value", result.stdout)
+        self.assertFalse((self.root / "results").exists())
+        self.assertFalse((self.root / ".omo").exists())
+
     def setUp(self):
         self.directory = tempfile.TemporaryDirectory(prefix="overseer experiment ")
         self.root = Path(self.directory.name)
@@ -175,6 +225,8 @@ class ExperimentRunnerTests(unittest.TestCase):
             for line in result.stdout.splitlines()
             if line.startswith(runner.MARKER)
         ]
+        completion = next(event for event in events if event["event"] == "complete")
+        self.assertEqual(completion["exit_code"], 0)
         sequence = [
             (e["event"], e["id"]) for e in events if e["event"] in {"start", "finish"}
         ]
@@ -189,6 +241,21 @@ class ExperimentRunnerTests(unittest.TestCase):
             self.assertEqual(str(run["parameters"]["threads"]), output["threads"])
             self.assertEqual(run["parameters"]["method"], output["method"])
             self.assertTrue((Path(run["folder"]) / "output.log").is_file())
+
+    def test_completion_includes_failure_even_when_no_trial_has_started(self):
+        self.config["build"] = {"commands": [["false"]]}
+        runner.write(self.file, self.config)
+        result = self.cli("configure", self.root / "failed-configure", MODULE_PATH, self.file)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        events = [
+            json.loads(line[len(runner.MARKER) :])
+            for line in result.stdout.splitlines()
+            if line.startswith(runner.MARKER)
+        ]
+        completion = next(event for event in events if event["event"] == "complete")
+        self.assertEqual(completion["exit_code"], 1)
+        self.assertEqual(completion["failed"], 0)
+        self.assertEqual(completion["completed"], 0)
 
     def test_exported_runner_replays_without_neovim_from_another_cwd(self):
         exported = self.root / "bundle"

@@ -83,6 +83,7 @@ editor floats.
 | `N`, `O`, `M` | New/copy experiment, choose saved experiment, open manager |
 | `p`, `T`, `b` | Choose CMake preset, executable target, binary |
 | `C`, `B`, `r` | Sync source, configure, build, run combinations sequentially |
+| `P` | Profile selected local combinations through the optional profiler.nvim integration |
 | `Y`, `A`, `D` | Sync source, reconnect to the saved session, release held allocations |
 | `w`, `e`, `R` | Save, close float and edit JSON, reload |
 | `E`, `L` | Export a portable bundle, load another source JSON |
@@ -146,6 +147,22 @@ an entire option explicitly publishes its definition; replacing an existing
 shared option is a separate dialog choice. Shared changes affect future loads,
 not frozen launches or exported bundles.
 
+## Profiling selected combinations
+
+With `profiler.nvim` configured, press `P` to save the displayed experiment and
+profile its selected parameter combinations. The profiler owns trace collection,
+saved reports, and cancellation through `:ProfilerStop`; ordinary `r` execution
+remains unchanged. Profiling currently supports local profiles without Slurm.
+Choose an instrumented target and configure its build commands before profiling.
+
+For integrations, `require("overseer.experiment").launch_plan(project, file)`
+returns a validated snapshot without executing commands, creating a session, or
+changing the active experiment. `file` defaults to the active experiment. The
+snapshot includes `file`, `project`, resolved `config`, the normal `plan`, and
+`build_commands` keyed by server ID. Argument, launcher, environment, shared-option,
+and build-placeholder expansion uses the same planner as normal execution.
+The Python helper exposes the same operation as `launch-plan <config>`.
+
 ```json
 {
   "version": 1,
@@ -178,6 +195,14 @@ and choices such as `{"id":"d1","path":"dataset/output/d1.mtx"}`. Enter rescans
 that directory recursively, preserving known IDs and path metadata. `paths`
 can override a dataset per profile or parent, e.g. `{"server1":"/datasets/d1.mtx"}`.
 Other paths are relative to each server's project directory.
+
+The file picker includes **Add folder…**. Its directory-completing prompt accepts
+paths relative to the project root. Added folders are saved in
+`source.directories`, alongside the original `source.directory`; all are scanned
+recursively. Duplicate paths are listed once, existing choice IDs and selections
+are preserved, and equal filenames from different folders receive distinct IDs.
+Cancel or an invalid folder leaves the configuration unchanged. Empty folders
+show an informational message and keep the Add folder action available.
 
 ## Slurm nodes and hosts
 

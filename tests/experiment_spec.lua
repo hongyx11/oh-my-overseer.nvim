@@ -211,6 +211,38 @@ if jobs:
     assert.are.equal(source, vim.api.nvim_get_current_win())
   end)
 
+  it("profiles the displayed experiment after saving without running its normal command", function()
+    local selected
+    vim.api.nvim_create_user_command("ProfilerExperiment", function(args)
+      selected = args.args
+    end, { nargs = "?", force = true })
+    local ok, err = pcall(function()
+      state.config.name = "Updated before profiling"
+      panel_key("P")
+      assert.are.equal(state.file, selected)
+      assert.are.equal(
+        "Updated before profiling",
+        require("overseer.experiment_store").read(state.file).name
+      )
+      assert.is_nil(state.task)
+      assert.is_true(vim.api.nvim_win_is_valid(source))
+      assert.are.equal(source, vim.api.nvim_get_current_win())
+    end)
+    vim.api.nvim_del_user_command("ProfilerExperiment")
+    assert.is_true(ok, tostring(err))
+  end)
+
+  it("keeps explicit bundled matrices when rescanning downloaded datasets", function()
+    vim.fn.writefile({ "bundled matrix" }, root .. "/smoke.mtx")
+    table.insert(state.config.parameters[1].choices, { id = "smoke", path = "smoke.mtx" })
+    panel_key("w")
+    panel_key("R")
+    panel_option("dataset")
+    local choices = picker()
+    assert.are.equal(4, choices.manager:num_results())
+    require("telescope.actions").close(vim.api.nvim_get_current_buf())
+  end)
+
   it("marks multiple datasets with Tab and persists the entire selection", function()
     panel_option("dataset")
     local current = picker()
@@ -235,6 +267,41 @@ if jobs:
     assert.are.same({ "d1", "d2" }, saved.parameters[1].selected)
   end)
 
+  it("adds a dataset folder from the picker and selects its matrices", function()
+    vim.fn.mkdir(root .. "/more matrices", "p")
+    vim.fn.writefile({ "matrix" }, root .. "/more matrices/new.mtx")
+    vim.ui.input = function(opts, callback)
+      assert.are.equal("dir", opts.completion)
+      callback("more matrices")
+    end
+    panel_option("dataset")
+    local current = picker()
+    current:set_prompt("Add folder")
+    assert.is_true(vim.wait(3000, function()
+      local entry = require("telescope.actions.state").get_selected_entry()
+      return entry and entry.value.action ~= nil
+    end, 10))
+    require("telescope.actions").select_default(current.prompt_bufnr)
+    assert.is_true(vim.wait(3000, function()
+      return state.config.parameters[1].source.directories ~= nil
+    end, 10))
+    current = picker()
+    current:set_prompt("new")
+    assert.is_true(vim.wait(3000, function()
+      local entry = require("telescope.actions.state").get_selected_entry()
+      return entry and entry.value.path == "more matrices/new.mtx"
+    end, 10))
+    vim.fn.maparg("<Tab>", "i", false, true).callback()
+    settle()
+    require("telescope.actions").select_default(current.prompt_bufnr)
+    assert.is_true(vim.wait(3000, function()
+      return #state.config.parameters[1].selected == 2
+    end, 10))
+    local saved = require("overseer.experiment_store").read(state.file).parameters[1]
+    assert.same({ "more matrices" }, saved.source.directories)
+    assert.same({ "d1", "new" }, saved.selected)
+  end)
+
   it("selects all methods by stable IDs rather than their command-line values", function()
     panel_option("method")
     local current = picker()
@@ -257,6 +324,7 @@ if jobs:
     end, 10))
     settle()
     assert.are.equal(overseer.STATUS.SUCCESS, state.task.status)
+    assert.are.equal("SUCCESS", state.status)
     assert.are.equal(2, state.completed)
     assert.are.equal(0, state.failed)
     assert.are.equal(2, #vim.api.nvim_tabpage_list_wins(0))
